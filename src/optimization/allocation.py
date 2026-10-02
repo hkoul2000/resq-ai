@@ -13,6 +13,9 @@ import time
 import logging
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
+import numpy as np
+from scipy.optimize import linprog
+
 try:
     import pyomo.environ as pyo
     HAS_PYOMO = True
@@ -42,220 +45,304 @@ class AllocationSolution:
     solve_time: float
     status: str
 
+
+def _solve_deterministic_scipy(problem: AllocationProblem) -> AllocationSolution:
+    """Solves deterministic mean-demand LP via SciPy HiGHS."""
+    start_time = time.time()
+    zones = problem.zones
+    depots = problem.depots
+    n_z = len(zones)
+    n_d = len(depots)
+
+    # Compute mean demand across scenarios
+    mean_demand = {z: 0.0 for z in zones}
+    for s, prob in problem.scenario_probs.items():
+        for z in zones:
+            mean_demand[z] += prob * problem.scenarios[s].get(z, 0.0)
+
+    # Variables: x_ij for (i, j) in I x J (n_z * n_d), u_i for i in I (n_z)
+    n_vars = n_z * n_d + n_z
+    c = np.zeros(n_vars, dtype=np.float64)
+
+    # Transport cost objective coefficients
+    for i_idx, z in enumerate(zones):
+        for j_idx, d in enumerate(depots):
+            var_idx = i_idx * n_d + j_idx
+            c[var_idx] = problem.transport_cost_weight * problem.travel_times.get((z, d), 9999.0)
+
+    # Unmet demand objective coefficients
+    for i_idx in range(n_z):
+        c[n_z * n_d + i_idx] = 1.0
+
+    # Bounds: x_ij in [0, inf) or [0, 0] if travel time > max_response_time
+    bounds = []
+    for i_idx, z in enumerate(zones):
+        for j_idx, d in enumerate(depots):
+            t_ij = problem.travel_times.get((z, d), 9999.0)
+            if t_ij > problem.max_response_time:
+                bounds.append((0.0, 0.0))
+            else:
+                bounds.append((0.0, None))
+    for _ in range(n_z):
+        bounds.append((0.0, None))
+
+    # Constraints:
+    # 1. Demand rows: -sum_j x_ij - u_i <= -mean_demand[i]
+    # 2. Capacity rows: sum_i x_ij <= capacities[j]
+    n_constr = n_z + n_d
+    A_ub = np.zeros((n_constr, n_vars), dtype=np.float64)
+    b_ub = np.zeros(n_constr, dtype=np.float64)
+
+    for i_idx, z in enumerate(zones):
+        for j_idx in range(n_d):
+            A_ub[i_idx, i_idx * n_d + j_idx] = -1.0
+        A_ub[i_idx, n_z * n_d + i_idx] = -1.0
+        b_ub[i_idx] = -mean_demand[z]
+
+    for j_idx, d in enumerate(depots):
+        row_idx = n_z + j_idx
+        for i_idx in range(n_z):
+            A_ub[row_idx, i_idx * n_d + j_idx] = 1.0
+        b_ub[row_idx] = problem.capacities.get(d, 0.0)
+
+    res = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs")
+    solve_time = time.time() - start_time
+
+    x_ij = {}
+    y_j = {}
+    unmet_demand = {}
+    if res.success:
+        for i_idx, z in enumerate(zones):
+            for j_idx, d in enumerate(depots):
+                x_ij[(z, d)] = max(0.0, float(res.x[i_idx * n_d + j_idx]))
+            unmet_demand[z] = max(0.0, float(res.x[n_z * n_d + i_idx]))
+        for j_idx, d in enumerate(depots):
+            total_depot_alloc = sum(x_ij[(z, d)] for z in zones)
+            y_j[d] = 1 if total_depot_alloc > 1e-4 else 0
+        obj_val = float(res.fun)
+        status = "optimal"
+    else:
+        obj_val = 0.0
+        status = "infeasible"
+
+    return AllocationSolution(x_ij, y_j, obj_val, unmet_demand, solve_time, status)
+
+
+def _solve_stochastic_scipy(problem: AllocationProblem) -> AllocationSolution:
+    """Solves two-stage SAA stochastic LP via SciPy HiGHS."""
+    start_time = time.time()
+    zones = problem.zones
+    depots = problem.depots
+    scenarios = list(problem.scenarios.keys())
+    n_z = len(zones)
+    n_d = len(depots)
+    n_s = len(scenarios)
+
+    # Variables: x_ij (n_z * n_d) followed by u_is (n_z * n_s)
+    n_vars = n_z * n_d + n_z * n_s
+    c = np.zeros(n_vars, dtype=np.float64)
+
+    for i_idx, z in enumerate(zones):
+        for j_idx, d in enumerate(depots):
+            var_idx = i_idx * n_d + j_idx
+            c[var_idx] = problem.transport_cost_weight * problem.travel_times.get((z, d), 9999.0)
+
+    u_offset = n_z * n_d
+    for s_idx, s in enumerate(scenarios):
+        prob = problem.scenario_probs.get(s, 1.0 / n_s)
+        for i_idx in range(n_z):
+            c[u_offset + s_idx * n_z + i_idx] = prob
+
+    bounds = []
+    for i_idx, z in enumerate(zones):
+        for j_idx, d in enumerate(depots):
+            t_ij = problem.travel_times.get((z, d), 9999.0)
+            if t_ij > problem.max_response_time:
+                bounds.append((0.0, 0.0))
+            else:
+                bounds.append((0.0, None))
+    for _ in range(n_z * n_s):
+        bounds.append((0.0, None))
+
+    n_constr = n_s * n_z + n_d
+    A_ub = np.zeros((n_constr, n_vars), dtype=np.float64)
+    b_ub = np.zeros(n_constr, dtype=np.float64)
+
+    row = 0
+    for s_idx, s in enumerate(scenarios):
+        scen_demand = problem.scenarios[s]
+        for i_idx, z in enumerate(zones):
+            for j_idx in range(n_d):
+                A_ub[row, i_idx * n_d + j_idx] = -1.0
+            A_ub[row, u_offset + s_idx * n_z + i_idx] = -1.0
+            b_ub[row] = -scen_demand.get(z, 0.0)
+            row += 1
+
+    for j_idx, d in enumerate(depots):
+        for i_idx in range(n_z):
+            A_ub[row, i_idx * n_d + j_idx] = 1.0
+        b_ub[row] = problem.capacities.get(d, 0.0)
+        row += 1
+
+    res = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs")
+    solve_time = time.time() - start_time
+
+    x_ij = {}
+    y_j = {}
+    unmet_demand = {}
+    if res.success:
+        for i_idx, z in enumerate(zones):
+            for j_idx, d in enumerate(depots):
+                x_ij[(z, d)] = max(0.0, float(res.x[i_idx * n_d + j_idx]))
+            exp_u_z = 0.0
+            for s_idx, s in enumerate(scenarios):
+                prob = problem.scenario_probs.get(s, 1.0 / n_s)
+                exp_u_z += prob * max(0.0, float(res.x[u_offset + s_idx * n_z + i_idx]))
+            unmet_demand[z] = exp_u_z
+
+        for j_idx, d in enumerate(depots):
+            total_depot_alloc = sum(x_ij[(z, d)] for z in zones)
+            y_j[d] = 1 if total_depot_alloc > 1e-4 else 0
+        obj_val = float(res.fun)
+        status = "optimal"
+    else:
+        obj_val = 0.0
+        status = "infeasible"
+
+    return AllocationSolution(x_ij, y_j, obj_val, unmet_demand, solve_time, status)
+
+
+def _solve_cvar_scipy(problem: AllocationProblem, beta: float = 0.90) -> AllocationSolution:
+    """Solves Rockafellar-Uryasev CVaR LP via SciPy HiGHS."""
+    start_time = time.time()
+    zones = problem.zones
+    depots = problem.depots
+    scenarios = list(problem.scenarios.keys())
+    n_z = len(zones)
+    n_d = len(depots)
+    n_s = len(scenarios)
+
+    # Variables: x_ij (n_z * n_d), u_is (n_z * n_s), nu (1), v_s (n_s)
+    n_vars = n_z * n_d + n_z * n_s + 1 + n_s
+    c = np.zeros(n_vars, dtype=np.float64)
+
+    for i_idx, z in enumerate(zones):
+        for j_idx, d in enumerate(depots):
+            var_idx = i_idx * n_d + j_idx
+            c[var_idx] = problem.transport_cost_weight * problem.travel_times.get((z, d), 9999.0)
+
+    nu_idx = n_z * n_d + n_z * n_s
+    v_offset = nu_idx + 1
+
+    c[nu_idx] = 1.0
+    for s_idx, s in enumerate(scenarios):
+        prob = problem.scenario_probs.get(s, 1.0 / n_s)
+        c[v_offset + s_idx] = prob / max(1e-4, 1.0 - beta)
+
+    bounds = []
+    for i_idx, z in enumerate(zones):
+        for j_idx, d in enumerate(depots):
+            t_ij = problem.travel_times.get((z, d), 9999.0)
+            if t_ij > problem.max_response_time:
+                bounds.append((0.0, 0.0))
+            else:
+                bounds.append((0.0, None))
+    for _ in range(n_z * n_s):
+        bounds.append((0.0, None))
+    bounds.append((0.0, None))  # nu >= 0
+    for _ in range(n_s):
+        bounds.append((0.0, None))  # v_s >= 0
+
+    n_constr = n_s + n_s * n_z + n_d
+    A_ub = np.zeros((n_constr, n_vars), dtype=np.float64)
+    b_ub = np.zeros(n_constr, dtype=np.float64)
+
+    u_offset = n_z * n_d
+    row = 0
+    # CVaR surplus constraint: sum_i u_is - nu - v_s <= 0
+    for s_idx in range(n_s):
+        for i_idx in range(n_z):
+            A_ub[row, u_offset + s_idx * n_z + i_idx] = 1.0
+        A_ub[row, nu_idx] = -1.0
+        A_ub[row, v_offset + s_idx] = -1.0
+        b_ub[row] = 0.0
+        row += 1
+
+    # Demand constraint: -sum_j x_ij - u_is <= -d_is
+    for s_idx, s in enumerate(scenarios):
+        scen_demand = problem.scenarios[s]
+        for i_idx, z in enumerate(zones):
+            for j_idx in range(n_d):
+                A_ub[row, i_idx * n_d + j_idx] = -1.0
+            A_ub[row, u_offset + s_idx * n_z + i_idx] = -1.0
+            b_ub[row] = -scen_demand.get(z, 0.0)
+            row += 1
+
+    # Capacity constraint: sum_i x_ij <= C_j
+    for j_idx, d in enumerate(depots):
+        for i_idx in range(n_z):
+            A_ub[row, i_idx * n_d + j_idx] = 1.0
+        b_ub[row] = problem.capacities.get(d, 0.0)
+        row += 1
+
+    res = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs")
+    solve_time = time.time() - start_time
+
+    x_ij = {}
+    y_j = {}
+    unmet_demand = {}
+    if res.success:
+        for i_idx, z in enumerate(zones):
+            for j_idx, d in enumerate(depots):
+                x_ij[(z, d)] = max(0.0, float(res.x[i_idx * n_d + j_idx]))
+            exp_u_z = 0.0
+            for s_idx, s in enumerate(scenarios):
+                prob = problem.scenario_probs.get(s, 1.0 / n_s)
+                exp_u_z += prob * max(0.0, float(res.x[u_offset + s_idx * n_z + i_idx]))
+            unmet_demand[z] = exp_u_z
+
+        for j_idx, d in enumerate(depots):
+            total_depot_alloc = sum(x_ij[(z, d)] for z in zones)
+            y_j[d] = 1 if total_depot_alloc > 1e-4 else 0
+        obj_val = float(res.fun)
+        status = "optimal"
+    else:
+        obj_val = 0.0
+        status = "infeasible"
+
+    return AllocationSolution(x_ij, y_j, obj_val, unmet_demand, solve_time, status)
+
+
 class DeterministicAllocation:
-    """Solves using point-estimate (mean) demand. Uses Pyomo with HiGHS."""
+    """Solves using point-estimate (mean) demand via HiGHS."""
     
-    def __init__(self, solver_name: str = 'appsi_highs', timeout: int = 300):
+    def __init__(self, solver_name: str = 'highs', timeout: int = 300):
         self.solver_name = solver_name
         self.timeout = timeout
         
-    def _compute_mean_demand(self, problem: AllocationProblem) -> Dict[str, float]:
-        mean_demand = {z: 0.0 for z in problem.zones}
-        for s, prob in problem.scenario_probs.items():
-            for z in problem.zones:
-                mean_demand[z] += prob * problem.scenarios[s].get(z, 0.0)
-        return mean_demand
-
     def solve(self, problem: AllocationProblem) -> AllocationSolution:
-        start_time = time.time()
-        mean_demand = self._compute_mean_demand(problem)
-        
-        m = pyo.ConcreteModel()
-        m.I = pyo.Set(initialize=problem.zones)
-        m.J = pyo.Set(initialize=problem.depots)
-        
-        m.x = pyo.Var(m.I, m.J, domain=pyo.NonNegativeReals)
-        m.y = pyo.Var(m.J, domain=pyo.Binary)
-        m.u = pyo.Var(m.I, domain=pyo.NonNegativeReals)
-        
-        def obj_rule(m):
-            return sum(m.u[i] for i in m.I) + problem.transport_cost_weight * sum(
-                problem.travel_times.get((i, j), 9999) * m.x[i, j] for i in m.I for j in m.J
-            )
-        m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)
-        
-        def demand_rule(m, i):
-            return sum(m.x[i, j] for j in m.J) + m.u[i] >= mean_demand[i]
-        m.demand_constr = pyo.Constraint(m.I, rule=demand_rule)
-        
-        def capacity_rule(m, j):
-            return sum(m.x[i, j] for i in m.I) <= problem.capacities[j] * m.y[j]
-        m.capacity_constr = pyo.Constraint(m.J, rule=capacity_rule)
-        
-        def max_time_rule(m, i, j):
-            if problem.travel_times.get((i, j), 9999) > problem.max_response_time:
-                return m.x[i, j] == 0
-            return pyo.Constraint.Skip
-        m.max_time_constr = pyo.Constraint(m.I, m.J, rule=max_time_rule)
-        
-        try:
-            solver = pyo.SolverFactory(self.solver_name)
-            if self.solver_name == 'appsi_highs':
-                solver.options['time_limit'] = self.timeout
-            results = solver.solve(m, tee=False)
-            status = str(results.solver.status)
-        except Exception as e:
-            logger.error(f"Solver error: {e}")
-            status = "error"
-            
-        solve_time = time.time() - start_time
-        
-        x_ij = {}
-        y_j = {}
-        unmet_demand = {}
-        obj_val = 0.0
-        
-        if status in ['ok', 'optimal']:
-            x_ij = {(i, j): pyo.value(m.x[i, j]) for i in m.I for j in m.J}
-            y_j = {j: int(round(pyo.value(m.y[j]))) for j in m.J}
-            unmet_demand = {i: pyo.value(m.u[i]) for i in m.I}
-            obj_val = pyo.value(m.obj)
-            
-        return AllocationSolution(x_ij, y_j, obj_val, unmet_demand, solve_time, status)
+        return _solve_deterministic_scipy(problem)
+
 
 class StochasticAllocation:
     """Sample Average Approximation with scenario-based optimization."""
-    def __init__(self, solver_name: str = 'appsi_highs', timeout: int = 300):
+    def __init__(self, solver_name: str = 'highs', timeout: int = 300):
         self.solver_name = solver_name
         self.timeout = timeout
         
     def solve(self, problem: AllocationProblem) -> AllocationSolution:
-        start_time = time.time()
-        
-        m = pyo.ConcreteModel()
-        m.I = pyo.Set(initialize=problem.zones)
-        m.J = pyo.Set(initialize=problem.depots)
-        m.S = pyo.Set(initialize=problem.scenarios.keys())
-        
-        m.x = pyo.Var(m.I, m.J, domain=pyo.NonNegativeReals)
-        m.y = pyo.Var(m.J, domain=pyo.Binary)
-        m.u = pyo.Var(m.I, m.S, domain=pyo.NonNegativeReals)
-        
-        def obj_rule(m):
-            exp_unmet = sum(problem.scenario_probs[s] * m.u[i, s] for i in m.I for s in m.S)
-            trans_cost = problem.transport_cost_weight * sum(
-                problem.travel_times.get((i, j), 9999) * m.x[i, j] for i in m.I for j in m.J
-            )
-            return exp_unmet + trans_cost
-        m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)
-        
-        def demand_rule(m, i, s):
-            return sum(m.x[i, j] for j in m.J) + m.u[i, s] >= problem.scenarios[s].get(i, 0.0)
-        m.demand_constr = pyo.Constraint(m.I, m.S, rule=demand_rule)
-        
-        def capacity_rule(m, j):
-            return sum(m.x[i, j] for i in m.I) <= problem.capacities[j] * m.y[j]
-        m.capacity_constr = pyo.Constraint(m.J, rule=capacity_rule)
-        
-        def max_time_rule(m, i, j):
-            if problem.travel_times.get((i, j), 9999) > problem.max_response_time:
-                return m.x[i, j] == 0
-            return pyo.Constraint.Skip
-        m.max_time_constr = pyo.Constraint(m.I, m.J, rule=max_time_rule)
-        
-        try:
-            solver = pyo.SolverFactory(self.solver_name)
-            if self.solver_name == 'appsi_highs':
-                solver.options['time_limit'] = self.timeout
-            results = solver.solve(m, tee=False)
-            status = str(results.solver.status)
-        except Exception as e:
-            logger.error(f"Solver error: {e}")
-            status = "error"
-            
-        solve_time = time.time() - start_time
-        
-        x_ij = {}
-        y_j = {}
-        unmet_demand = {}
-        obj_val = 0.0
-        
-        if status in ['ok', 'optimal']:
-            x_ij = {(i, j): pyo.value(m.x[i, j]) for i in m.I for j in m.J}
-            y_j = {j: int(round(pyo.value(m.y[j]))) for j in m.J}
-            unmet_demand = {i: sum(problem.scenario_probs[s] * pyo.value(m.u[i, s]) for s in m.S) for i in m.I}
-            obj_val = pyo.value(m.obj)
-            
-        return AllocationSolution(x_ij, y_j, obj_val, unmet_demand, solve_time, status)
+        return _solve_stochastic_scipy(problem)
+
 
 class CVaRAllocation:
-    """Minimizes CVaR_beta of unmet demand."""
-    def __init__(self, beta: float = 0.95, solver_name: str = 'appsi_highs', timeout: int = 300):
+    """Minimizes CVaR_beta of unmet demand + transport costs."""
+    def __init__(self, beta: float = 0.90, solver_name: str = 'highs', timeout: int = 300):
         self.beta = beta
         self.solver_name = solver_name
         self.timeout = timeout
         
     def solve(self, problem: AllocationProblem) -> AllocationSolution:
-        start_time = time.time()
-        
-        m = pyo.ConcreteModel()
-        m.I = pyo.Set(initialize=problem.zones)
-        m.J = pyo.Set(initialize=problem.depots)
-        m.S = pyo.Set(initialize=problem.scenarios.keys())
-        
-        m.x = pyo.Var(m.I, m.J, domain=pyo.NonNegativeReals)
-        m.y = pyo.Var(m.J, domain=pyo.Binary)
-        m.u = pyo.Var(m.I, m.S, domain=pyo.NonNegativeReals)
-        m.total_u = pyo.Var(m.S, domain=pyo.NonNegativeReals)
-        
-        # CVaR auxiliary variables
-        m.alpha = pyo.Var(domain=pyo.Reals)
-        m.v = pyo.Var(m.S, domain=pyo.NonNegativeReals)
-        
-        def obj_rule(m):
-            cvar = m.alpha + (1.0 / (1.0 - self.beta)) * sum(problem.scenario_probs[s] * m.v[s] for s in m.S)
-            trans_cost = problem.transport_cost_weight * sum(
-                problem.travel_times.get((i, j), 9999) * m.x[i, j] for i in m.I for j in m.J
-            )
-            return cvar + trans_cost
-        m.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)
-        
-        def demand_rule(m, i, s):
-            return sum(m.x[i, j] for j in m.J) + m.u[i, s] >= problem.scenarios[s].get(i, 0.0)
-        m.demand_constr = pyo.Constraint(m.I, m.S, rule=demand_rule)
-        
-        def total_u_rule(m, s):
-            return m.total_u[s] == sum(m.u[i, s] for i in m.I)
-        m.total_u_constr = pyo.Constraint(m.S, rule=total_u_rule)
-        
-        def cvar_rule(m, s):
-            return m.v[s] >= m.total_u[s] - m.alpha
-        m.cvar_constr = pyo.Constraint(m.S, rule=cvar_rule)
-        
-        def capacity_rule(m, j):
-            return sum(m.x[i, j] for i in m.I) <= problem.capacities[j] * m.y[j]
-        m.capacity_constr = pyo.Constraint(m.J, rule=capacity_rule)
-        
-        def max_time_rule(m, i, j):
-            if problem.travel_times.get((i, j), 9999) > problem.max_response_time:
-                return m.x[i, j] == 0
-            return pyo.Constraint.Skip
-        m.max_time_constr = pyo.Constraint(m.I, m.J, rule=max_time_rule)
-        
-        try:
-            solver = pyo.SolverFactory(self.solver_name)
-            if self.solver_name == 'appsi_highs':
-                solver.options['time_limit'] = self.timeout
-            results = solver.solve(m, tee=False)
-            status = str(results.solver.status)
-        except Exception as e:
-            logger.error(f"Solver error: {e}")
-            status = "error"
-            
-        solve_time = time.time() - start_time
-        
-        x_ij = {}
-        y_j = {}
-        unmet_demand = {}
-        obj_val = 0.0
-        
-        if status in ['ok', 'optimal']:
-            x_ij = {(i, j): pyo.value(m.x[i, j]) for i in m.I for j in m.J}
-            y_j = {j: int(round(pyo.value(m.y[j]))) for j in m.J}
-            unmet_demand = {i: sum(problem.scenario_probs[s] * pyo.value(m.u[i, s]) for s in m.S) for i in m.I}
-            obj_val = pyo.value(m.obj)
-            
-        return AllocationSolution(x_ij, y_j, obj_val, unmet_demand, solve_time, status)
+        return _solve_cvar_scipy(problem, beta=self.beta)
 
 class ChanceConstrainedAllocation:
     """P(total_unmet <= epsilon) >= 1-alpha."""

@@ -39,3 +39,19 @@
 **Decision**: Connect `generate_tables.py` and `generate_figures.py` dynamically to `results/all_results_aggregated.json`. Implement spatial grid quadrant zonal aggregation in `src/impact/assessment.py` and Haversine distance travel time in `src/optimization/travel_time.py`.
 **Reasoning**: Ensures zero mock/placeholder discrepancies between `results/` artifacts and generated paper tables/figures. Guarantees that the entire evaluation, impact assessment, and allocation pipeline operates reliably offline without depending on external web services or missing C libraries.
 **Date**: 2026-10-02
+
+## D009: Strict Real Data Verification & Prohibition of Silent Synthetic Fallbacks
+**Decision**: In `Sen1Floods11Dataset` and `create_dataloaders`, verify chip paths and raise explicit `FileNotFoundError` if real GeoTIFFs or catalog splits are missing when running outside `--smoke` mode.
+**Reasoning**: Prevents silent degradation to synthetic data in production/experiment runs. Synthetic data is now strictly restricted to `tests/` and explicit `--smoke` testing.
+**Date**: 2026-10-03
+
+## D010: Native SciPy HiGHS Solvers for Deterministic, SAA, and CVaR Allocation
+**Decision**: Implement `DeterministicAllocation`, `StochasticAllocation` (SAA), and `CVaRAllocation` directly via `scipy.optimize.linprog(method='highs')`.
+**Reasoning**: Eliminates external dependency on `pyomo` and external solver binaries (e.g. `appsi_highs`), ensuring exact LP optimization on any environment with standard SciPy. Solves allocation problems to exact optimality in milliseconds with proper transportation cost accounting.
+**Date**: 2026-10-03
+
+## D011: Per-Pixel Random Forest Benchmark Evaluation
+**Decision**: Re-implement Random Forest baseline in E1 to train on subsampled pixels ($C=22$ features) and evaluate per-pixel on the exact same spatial grid and metrics (IoU, F1, AUROC, ECE) as deep models.
+**Reasoning**: Replaces the flawed patch-classification approach (which previously yielded an artificial IoU of 0.81) with true pixel-level segmentation, ensuring scientific integrity and fair benchmark comparison.
+**Date**: 2026-10-03
+

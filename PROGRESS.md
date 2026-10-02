@@ -31,30 +31,59 @@
 - **Blockers**: None.
 
 ## Phase 5: Experimental Evaluation & Statistical Benchmarking
-- **Status**: COMPLETE
-- **Done**: End-to-end experiment pipeline implemented in `experiments/run_experiments.py` executing E1 (Main Comparison), E2 (Ablations), E3 (Calibration), E4 (Conformal Coverage), E5 (Robustness), E6 (Allocation), and E7 (Efficiency). Verified in `--smoke` mode under 5 minutes on CPU. Real outputs saved under `results/`. Generated all publication figures (`figures/*.pdf`, `figures/*.png`) and LaTeX tables (`paper/tables/*.tex`).
-- **Next**: System & demo.
-- **Blockers**: None.
+- **Status**: IN PROGRESS (Audit & Calibration Phase)
+- **Done**:
+  - `AUDIT.md` authored and committed, detailing all experimental origins, hardware, dataset sizes, and root causes of earlier anomalies.
+  - Coupled hydrological physics into synthetic generator so synthetic/smoke runs contain real learning signal.
+  - Re-implemented `Sen1Floods11Dataset` and `create_dataloaders` with leave-event-out splitting and `MultiModalFloodDataset`.
+  - Implemented exact HiGHS LP solvers in `src/optimization/allocation.py`.
+  - Verified complete test suite: 38 passed out of 38 tests (100% pass rate).
+- **Exact File and Function Where Stopped**:
+  - File: `src/optimization/allocation.py`
+  - Functions: `_solve_deterministic_scipy`, `_solve_stochastic_scipy`, `_solve_cvar_scipy` (completed and tested).
+  - Next target file: `experiments/run_experiments.py`, functions `run_e1_main_comparison` (pixel-level Random Forest) and `run_e6_allocation` (LP solver integration & sensitivity analysis).
+- **Next 3 Steps in Order**:
+  1. **Step 1**: In `experiments/run_experiments.py`:
+     - Update `run_e1_main_comparison` to evaluate Random Forest per-pixel across the test set ($C=22$ features, computing IoU/F1/ECE on identical pixels as ResQNet).
+     - Update `run_e6_allocation` to use the new native HiGHS LP solvers (`DeterministicAllocation`, `StochasticAllocation`, `CVaRAllocation`) and add the sensitivity analysis grid (varying capacity tightness $\kappa \in [0.7, 1.0, 1.3]$, demand variance $\sigma/\mu$, and risk $\alpha$).
+  2. **Step 2**: Re-run multi-seed benchmark (`--seeds 42 123 456`), verify Wilcoxon significance tests, and regenerate all paper tables (`paper/tables/*.tex`) and figures (`figures/*.png`, `figures/*.pdf`).
+  3. **Step 3**: Rewrite `FINAL_REPORT.md`, align `paper/main.tex` strictly with audited results, and create `COLAB_INSTRUCTIONS.md` detailing step-by-step GPU execution instructions.
+- **Known Bugs, Assumptions, or Open Issues**:
+  - Development machine is CPU-only, so full 100-epoch convergence on the complete 4,831-tile Sen1Floods11 dataset requires GPU execution via Colab (`notebooks/colab_full_experiments.ipynb`).
+  - Outside of `--smoke` mode, the real Sen1Floods11 GeoTIFF directory is required; the code will explicitly fail fast with `FileNotFoundError` rather than silently degrading to synthetic data.
+- **Tasks Requiring User Action (Colab GPU Execution)**:
+  - If full 100-epoch training on the entire 4,831-tile Sen1Floods11 dataset is desired on GPU:
+    1. Upload repository or clone into Google Colab with GPU runtime (T4 or A100).
+    2. Run `notebooks/colab_full_experiments.ipynb` (approx. 2-3 hours on T4 GPU).
+    3. Download generated bundle: `resq_ai_results.zip`.
+    4. Unpack into local `results/` and run `python experiments/generate_tables.py ; python experiments/generate_figures.py`.
+- **Exact Commands to Resume Local Runs**:
+  - To resume/run all experiments in smoke mode:
+    ```bash
+    .venv\Scripts\python.exe experiments/run_experiments.py --smoke --seeds 42 123 456 --experiment all
+    ```
+  - To resume/run a specific experiment (e.g. E1 or E6):
+    ```bash
+    .venv\Scripts\python.exe experiments/run_experiments.py --smoke --seeds 42 123 456 --experiment e1
+    .venv\Scripts\python.exe experiments/run_experiments.py --smoke --seeds 42 123 456 --experiment e6
+    ```
+  - To resume model training from checkpoint:
+    ```bash
+    .venv\Scripts\python.exe src/models/train.py --resume checkpoints/resqnet_best.pt
+    ```
+  - To run the full test suite:
+    ```bash
+    .venv\Scripts\pytest tests/ -q
+    ```
 
 ## Phase 6: Operational System & Interactive Demo
 - **Status**: COMPLETE
-- **Done**: FastAPI service (`app/api/main.py`) with `/predict`, `/impact`, `/allocate`, `/health`, and `/config` endpoints. Interactive Streamlit dashboard (`app/dashboard/streamlit_app.py`). Full suite of API integration tests in `tests/test_api.py`.
+- **Done**: FastAPI service (`app/api/main.py`) with real model inference, MC impact sampling, and greedy allocation. Interactive Streamlit dashboard (`app/dashboard/streamlit_app.py`). Full suite of API integration tests in `tests/test_api.py`.
 - **Next**: Paper and final QA.
 - **Blockers**: None.
 
 ## Phase 7: IEEE Paper & Dissemination
-- **Status**: COMPLETE
-- **Done**: LaTeX manuscript in `paper/main.tex` (IEEEtran format) with real experimental numbers and embedded publication-ready figures. Supplementary materials in `paper/supplementary.tex`, executive summary in `paper/summary.tex`, and critical review in `paper/self_critique.md`. Ready-to-run Google Colab notebooks generated (`notebooks/colab_smoke_test.ipynb`, `notebooks/colab_full_experiments.ipynb`).
-- **Next**: Final QA.
+- **Status**: IN PROGRESS (Audit Alignment)
+- **Done**: LaTeX manuscript in `paper/main.tex` (IEEEtran format), supplementary materials, dynamic table generation scripts.
+- **Next**: Update paper tables with 3-seed audited results and finalize text.
 - **Blockers**: None.
-
-## Phase 8: Final Quality Assurance & Release
-- **Status**: COMPLETE
-- **Done**: 38 automated tests passing across `tests/test_smoke.py`, `tests/test_model.py`, `tests/test_config.py`, and `tests/test_api.py`. No fabricated numbers. Documented decisions in `DECISIONS.md`. Created `FINAL_REPORT.md`. Tagged release `v1.0.0`.
-- **Blockers**: None.
-
-## Phase 9: Comprehensive Audit & Rigorous Grounding
-- **Status**: COMPLETE
-- **Done**: Conducted thorough audit of `results/`, `src/`, figures, tables, and `paper/main.tex`, documented in `AUDIT.md`. Fixed local discrepancies: dynamically connected `generate_tables.py` and `generate_figures.py` to `results/all_results_aggregated.json`; replaced mock API endpoints with real model inference, MC impact sampling, and greedy allocation; added Haversine travel time fallback; implemented 4-quadrant spatial grid zonal aggregation; updated abstract placeholders with empirical values. 38/38 unit tests passing. Ready for full GPU runs via Google Colab.
-- **Next**: Run `notebooks/colab_full_experiments.ipynb` on GPU and download `resq_ai_results.zip`.
-- **Blockers**: GPU compute required for 100-epoch Sen1Floods11 convergence (Colab notebook prepared).
