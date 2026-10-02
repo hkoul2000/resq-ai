@@ -185,6 +185,7 @@ class Sen1Floods11Dataset(Dataset):
         smoke: bool = False,
         max_chips: int | None = None,
         transform: Any = None,
+        chips: list[dict[str, Any]] | None = None,
     ) -> None:
         super().__init__()
         self.root = Path(root)
@@ -201,7 +202,9 @@ class Sen1Floods11Dataset(Dataset):
         self.catalog = Sen1Floods11Catalog(root, download=download)
 
         # Get chip list
-        if split == "bolivia":
+        if chips is not None:
+            self.chips = list(chips)
+        elif split == "bolivia":
             self.chips = self.catalog.get_split_chips("bolivia")
         else:
             self.chips = self.catalog.get_split_chips(split)
@@ -211,6 +214,21 @@ class Sen1Floods11Dataset(Dataset):
             max_chips = 20
         if max_chips is not None:
             self.chips = self.chips[:max_chips]
+
+        # In non-smoke mode, enforce real data presence (NO silent fallbacks)
+        if not self.smoke:
+            if len(self.chips) == 0:
+                raise FileNotFoundError(
+                    f"No Sen1Floods11 chips found for split '{split}' in {self.root}. "
+                    "Real dataset files must be downloaded before running full experiments. "
+                    "Download the dataset using Sen1Floods11Catalog or run with --smoke for CPU testing."
+                )
+            sample_chip = self.chips[0]
+            if sample_chip.get("s1") and not sample_chip["s1"].exists():
+                raise FileNotFoundError(
+                    f"Sen1Floods11 imagery file does not exist on disk: {sample_chip['s1']}. "
+                    "Please download the official GeoTIFFs or run with --smoke for CPU testing."
+                )
 
         # Normalization statistics (from Sen1Floods11 paper)
         self.s1_mean = np.array([-12.54, -20.19], dtype=np.float32)
@@ -476,16 +494,26 @@ class MultiModalFloodDataset(Dataset):
 
 def create_dataloaders(
     config: dict,
+    split_type: str = "official",
+    held_out_event: Optional[str] = None,
+    dem_dir: Optional[str | Path] = None,
+    landcover_dir: Optional[str | Path] = None,
+    rainfall_dir: Optional[str | Path] = None,
     smoke: bool = False,
 ) -> dict[str, torch.utils.data.DataLoader]:
-    """Create train/val/test dataloaders from config.
+    """Create train/val/test dataloaders from config using real Sen1Floods11 data.
 
     Args:
         config: Configuration dictionary
-        smoke: If True, use minimal data for testing
+        split_type: 'official' or 'leave_event_out'
+        held_out_event: Event name for leave-event-out validation (e.g. 'Bolivia', 'Ghana')
+        dem_dir: Directory containing preprocessed DEM/terrain npy files
+        landcover_dir: Directory containing WorldCover npy files
+        rainfall_dir: Directory containing CHIRPS rainfall npy files
+        smoke: If True, allow small subset for quick smoke checks
 
     Returns:
-        Dictionary of DataLoaders
+        Dictionary of DataLoaders with keys 'train', 'valid', 'test'
     """
     data_cfg = config.get("data", {})
     root = data_cfg.get("root", "data/")
@@ -495,15 +523,44 @@ def create_dataloaders(
     modalities = data_cfg.get("modalities", ["sar", "optical"])
     modality_dropout = data_cfg.get("modality_dropout", 0.2)
 
+    if dem_dir is None:
+        dem_dir = data_cfg.get("dem_dir")
+    if landcover_dir is None:
+        landcover_dir = data_cfg.get("landcover_dir")
+    if rainfall_dir is None:
+        rainfall_dir = data_cfg.get("rainfall_dir")
+
     if smoke:
         crop_size = config.get("smoke", {}).get("crop_size", 64)
         batch_size = config.get("smoke", {}).get("batch_size", 4)
         num_workers = config.get("smoke", {}).get("num_workers", 0)
 
+    split_chips_map: dict[str, list[dict[str, Any]] | None] = {
+        "train": None,
+        "valid": None,
+        "test": None,
+    }
+
+    if split_type == "leave_event_out":
+        if not held_out_event:
+            held_out_event = "Bolivia"
+        catalog = Sen1Floods11Catalog(root, download=True)
+        train_pool, test_chips = catalog.get_leave_event_out_splits(held_out_event)
+        n_val = max(1, int(len(train_pool) * 0.15))
+        split_chips_map["train"] = train_pool[:-n_val]
+        split_chips_map["valid"] = train_pool[-n_val:]
+        split_chips_map["test"] = test_chips
+        logger.info(
+            f"Leave-event-out split for '{held_out_event}': "
+            f"train={len(split_chips_map['train'])}, "
+            f"val={len(split_chips_map['valid'])}, "
+            f"test={len(split_chips_map['test'])}"
+        )
+
     dataloaders = {}
 
     for split in ["train", "valid", "test"]:
-        ds = Sen1Floods11Dataset(
+        base_ds = Sen1Floods11Dataset(
             root=root,
             split=split,
             modalities=modalities,
@@ -512,15 +569,26 @@ def create_dataloaders(
             modality_dropout=modality_dropout if split == "train" else 0.0,
             normalize=True,
             smoke=smoke,
+            chips=split_chips_map[split],
+        )
+
+        # Wrap with multi-modal features (DEM, Landcover, Rainfall)
+        multi_ds = MultiModalFloodDataset(
+            sen1floods_dataset=base_ds,
+            dem_dir=dem_dir,
+            landcover_dir=landcover_dir,
+            rainfall_dir=rainfall_dir,
+            geo_channels=config.get("model", {}).get("geo_channels", 6),
+            rainfall_seq_len=config.get("model", {}).get("rainfall_seq_len", 30),
         )
 
         dataloaders[split] = torch.utils.data.DataLoader(
-            ds,
+            multi_ds,
             batch_size=batch_size,
             shuffle=(split == "train"),
             num_workers=num_workers,
             pin_memory=torch.cuda.is_available(),
-            drop_last=(split == "train"),
+            drop_last=(split == "train" and len(multi_ds) > batch_size),
         )
 
     return dataloaders
