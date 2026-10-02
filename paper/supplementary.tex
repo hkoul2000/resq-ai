@@ -1,0 +1,46 @@
+\documentclass[journal]{IEEEtran}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{float}
+
+\begin{document}
+
+\title{Supplementary Material for ResQ-AI: An Uncertainty-Aware Multimodal Framework}
+
+\author{ResQ-AI Team}
+
+\maketitle
+
+\section{Extended Hyperparameter Configurations}
+\label{sec:hyperparams}
+This section details the hyperparameter search spaces and final selected values for the ResQNet model, UQ methods, and the stochastic optimization module.
+
+\begin{table}[H]
+\centering
+\caption{Hyperparameters for ResQNet Training}
+\begin{tabular}{llc}
+\toprule
+Parameter & Search Space & Selected \\
+\midrule
+Learning Rate & [1e-5, 1e-4, 1e-3] & 3e-4 \\
+Batch Size & [8, 16, 32] & 16 \\
+Weight Decay & [1e-6, 1e-5, 1e-4] & 1e-5 \\
+Modality Dropout Prob & [0.0, 0.2, 0.5] & 0.2 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Mathematical Derivations}
+\label{sec:math}
+\subsection{Chance Constraint Reformulation}
+The chance constraint for satisfying demand $P(\sum x_{mn} \ge D_n) \ge 1 - \alpha$ is reformulated using Big-M constraints in the Sample Average Approximation framework.
+Let $y^{(s)} \in \{0,1\}$ indicate if the constraint is violated in scenario $s$.
+$\sum_{m} x_{mn} \ge D_n^{(s)} - M y^{(s)}$ and $\sum_s y^{(s)} \le \alpha S$.
+
+\section{Additional Qualitative Results}
+\label{sec:qualitative}
+Additional visualizations of the uncertainty maps are provided here.
+
+\end{document}

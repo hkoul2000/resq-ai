@@ -1,0 +1,86 @@
+project:
+  name: resq-ai
+  seed: 42
+  seeds: [42, 123, 456, 789, 1024]
+  device: auto  # auto-detect GPU/CPU
+  smoke: false
+  num_workers: 4
+
+data:
+  root: data/
+  dataset: sen1floods11
+  chip_size: 512
+  crop_size: 256
+  batch_size: 16
+  val_batch_size: 32
+  modalities: [sar, optical, dem, landcover, rainfall]
+  modality_dropout: 0.2
+  normalize: true
+  augment: true
+  split: official  # official, leave_event_out, bolivia_holdout
+
+model:
+  name: resqnet
+  encoder: resnet34
+  pretrained: true
+  sar_channels: 2  # VV, VH
+  optical_channels: 13
+  geo_channels: 6  # elevation, slope, HAND, TWI, landcover_classes, dist_drainage
+  rainfall_seq_len: 30
+  rainfall_d_model: 64
+  rainfall_nhead: 4
+  rainfall_layers: 2
+  fusion: film_crossattention
+  dropout: 0.2
+  modality_dropout: 0.2
+
+training:
+  epochs: 100
+  lr: 1e-4
+  weight_decay: 1e-4
+  scheduler: cosine
+  warmup_epochs: 5
+  early_stopping_patience: 15
+  loss: bce_dice
+  focal_gamma: 2.0
+  dice_weight: 0.5
+  gradient_clip: 1.0
+  mixed_precision: true
+
+uq:
+  method: ensemble  # ensemble, mc_dropout, evidential, tta, conformal
+  ensemble_size: 5
+  mc_samples: 20
+  tta_transforms: 8
+  conformal_alpha: 0.1
+  mc_impact_samples: 200
+  evidential_kl_weight: 0.01
+
+optimization:
+  solver: highs
+  num_scenarios: 200
+  alpha_values: [0.05, 0.1, 0.2]
+  cvar_beta: 0.9
+  max_response_time_min: 30
+  resource_types: [rescue_teams, boats, relief_kits, shelter_beds]
+
+evaluation:
+  metrics: [iou, f1, precision, recall, auroc, auprc]
+  calibration_metrics: [ece, nll, brier]
+  num_seeds: 5
+  significance_test: wilcoxon
+  confidence_level: 0.95
+
+mlflow:
+  tracking_uri: mlruns
+  experiment_name: resq-ai
+
+smoke:
+  epochs: 2
+  batch_size: 4
+  crop_size: 64
+  ensemble_size: 2
+  mc_samples: 3
+  mc_impact_samples: 10
+  num_scenarios: 10
+  num_workers: 0

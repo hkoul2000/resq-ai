@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "resq-ai"
+version = "0.1.0"
+description = "Uncertainty-Aware Multimodal AI Framework for Urban Disaster Prediction"
+requires-python = ">=3.11"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "ResQ-AI Team"}]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4", "pre-commit>=3.5", "black>=23.0", "ruff>=0.1.0", "mypy>=1.0"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "D", "UP"]
+ignore = ["D100", "D104", "D203", "D213"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+markers = ["smoke: quick smoke tests", "slow: long-running tests"]

@@ -1,0 +1,79 @@
+project:
+  name: resq-ai-smoke
+  seed: 42
+  seeds: [42, 123]
+  device: cpu
+  smoke: true
+  num_workers: 0
+  checkpoint_dir: checkpoints/smoke
+
+data:
+  root: data/
+  dataset: synthetic
+  chip_size: 64
+  crop_size: 64
+  batch_size: 4
+  val_batch_size: 4
+  modalities: [sar, optical, dem, landcover, rainfall]
+  modality_dropout: 0.2
+  normalize: true
+  augment: false
+  num_train: 32
+  num_val: 8
+  num_test: 8
+
+model:
+  name: resqnet
+  encoder: resnet34
+  pretrained: false  # No pretrained weights for smoke
+  sar_channels: 2
+  optical_channels: 13
+  geo_channels: 6
+  rainfall_seq_len: 30
+  rainfall_d_model: 32
+  rainfall_nhead: 2
+  rainfall_layers: 1
+  fusion: film_crossattention
+  dropout: 0.1
+  modality_dropout: 0.2
+
+training:
+  epochs: 2
+  lr: 1e-3
+  weight_decay: 1e-4
+  scheduler: cosine
+  warmup_epochs: 0
+  early_stopping_patience: 5
+  loss: bce_dice
+  focal_gamma: 2.0
+  dice_weight: 0.5
+  gradient_clip: 1.0
+  mixed_precision: false
+
+uq:
+  method: mc_dropout
+  ensemble_size: 2
+  mc_samples: 3
+  tta_transforms: 4
+  conformal_alpha: 0.1
+  mc_impact_samples: 5
+  evidential_kl_weight: 0.01
+
+optimization:
+  solver: highs
+  num_scenarios: 5
+  alpha_values: [0.1]
+  cvar_beta: 0.9
+  max_response_time_min: 30
+  resource_types: [rescue_teams, relief_kits]
+
+evaluation:
+  metrics: [iou, f1, precision, recall]
+  calibration_metrics: [ece, brier]
+  num_seeds: 2
+  significance_test: wilcoxon
+  confidence_level: 0.95
+
+mlflow:
+  tracking_uri: mlruns
+  experiment_name: resq-ai-smoke

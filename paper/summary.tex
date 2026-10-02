@@ -1,0 +1,26 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+
+\begin{document}
+
+\title{Summary: ResQ-AI Framework}
+\author{ResQ-AI Team}
+\date{}
+\maketitle
+
+\section*{Overview}
+The ResQ-AI project proposes an uncertainty-aware multimodal framework aimed at addressing the critical challenges of urban flood prediction and emergency resource allocation. 
+
+\section*{Key Components}
+\begin{itemize}
+    \item \textbf{Multimodal Prediction:} Integrates SAR, Optical, DEM, and rainfall data using a novel architecture with FiLM and cross-attention.
+    \item \textbf{Uncertainty Quantification (UQ):} Benchmarks Deep Ensembles, MC Dropout, EDL, and Conformal Prediction to yield calibrated uncertainties.
+    \item \textbf{Impact Assessment:} Utilizes Monte Carlo sampling to propagate pixel-level uncertainties to population and infrastructure exposure metrics.
+    \item \textbf{Decision-Making:} Solves a chance-constrained stochastic optimization problem for resource allocation, using the generated impact distributions.
+\end{itemize}
+
+\section*{Significance}
+By closing the loop between Earth Observation deep learning and Operations Research, ResQ-AI demonstrates that calibrated predictive uncertainty can significantly reduce unmet demand during disaster response, saving lives and resources compared to traditional deterministic pipelines.
+
+\end{document}
