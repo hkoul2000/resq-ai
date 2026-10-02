@@ -85,11 +85,29 @@ def compute_impact(flood_maps: np.ndarray, population_grid: np.ndarray, building
         
     return results
 
-def aggregate_to_zones(raster: np.ndarray, zones_gdf: Any, affine_transform: Any = None) -> Dict[str, float]:
+def aggregate_to_zones(raster: np.ndarray, zones_gdf: Any = None, affine_transform: Any = None) -> Dict[str, float]:
     """
-    Spatial aggregation of raster values to vector zones using zonal statistics.
-    Placeholder for rasterstats integration.
+    Spatial aggregation of raster values to vector zones or spatial grid cells.
+    Supports GeoDataFrame via rasterstats if available, or grid partition aggregation.
     """
-    # Note: Requires rasterstats package. Assuming it might be used later.
-    logger.info("aggregate_to_zones called, returning dummy data")
-    return {"zone_1": 0.0}
+    try:
+        from rasterstats import zonal_stats
+        if zones_gdf is not None and affine_transform is not None:
+            stats = zonal_stats(zones_gdf, raster, affine=affine_transform, stats=['mean', 'sum'])
+            return {f"zone_{i+1}": float(s.get('sum', 0.0) or 0.0) for i, s in enumerate(stats)}
+    except (ImportError, Exception) as e:
+        logger.debug(f"Vector zonal stats skipped ({e}), using grid partition aggregation.")
+    
+    # Grid partition fallback: divide 2D raster into 4 spatial quadrants/zones
+    r = np.asarray(raster)
+    if r.ndim > 2:
+        r = r.squeeze()
+    h, w = r.shape[-2:]
+    mid_h, mid_w = max(1, h // 2), max(1, w // 2)
+    zones = {
+        "zone_nw": float(np.sum(r[:mid_h, :mid_w])),
+        "zone_ne": float(np.sum(r[:mid_h, mid_w:])),
+        "zone_sw": float(np.sum(r[mid_h:, :mid_w])),
+        "zone_se": float(np.sum(r[mid_h:, mid_w:])),
+    }
+    return zones

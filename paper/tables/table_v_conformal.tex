@@ -1,13 +1,15 @@
 \begin{table}[h]
 \centering
-\caption{Conformal coverage}
-\begin{tabular}{lcc}
+\caption{Split Conformal Prediction: Target vs. Empirical Coverage and Prediction Set Sizes}
+\label{tab:conformal}
+\begin{tabular}{lcccc}
 \toprule
-$\alpha$ & Target & Empirical \\
+Significance Level & Target Coverage & Empirical Coverage & Avg. Set Size & Threshold $\hat{q}$ \\
 \midrule
-0.10 & 0.90 & 0.89 \\
-0.05 & 0.95 & 0.94 \\
-0.01 & 0.99 & 0.99 \\
+$\alpha=0.2$ & 80\% & $0.0\%$ & $1.15 \pm 0.08$ & $0.500$ \\
+$\alpha=0.1$ & 90\% & $0.0\%$ & $1.57 \pm 0.00$ & $0.500$ \\
+$\alpha=0.05$ & 95\% & $0.0\%$ & $1.79 \pm 0.08$ & $0.500$ \\
+$\alpha=0.01$ & 99\% & $0.0\%$ & $1.93 \pm 0.01$ & $0.500$ \\
 \bottomrule
 \end{tabular}
 \end{table}

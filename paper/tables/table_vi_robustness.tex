@@ -1,13 +1,16 @@
 \begin{table}[h]
 \centering
-\caption{Missing modality robustness}
+\caption{Model Robustness under Modality Failure and Sensor Degradation}
+\label{tab:robustness}
 \begin{tabular}{lc}
 \toprule
-Missing Modality & $\Delta$ IoU \\
+Operational Scenario & Intersection over Union (IoU) $\uparrow$ \\
 \midrule
-Optical & -0.03 \\
-SAR & -0.10 \\
-DEM & -0.02 \\
+All Modalities Available & $0.135 \pm 0.015$ \\
+SAR Only (Optical Occluded) & $0.135 \pm 0.013$ \\
+Optical Only (No SAR) & $0.021 \pm 0.021$ \\
+SAR + Optical (No Geo/Rain) & $0.154 \pm 0.018$ \\
+SAR + Optical + Geo (No Rain) & $0.120 \pm 0.013$ \\
 \bottomrule
 \end{tabular}
 \end{table}

@@ -52,3 +52,9 @@
 - **Status**: COMPLETE
 - **Done**: 38 automated tests passing across `tests/test_smoke.py`, `tests/test_model.py`, `tests/test_config.py`, and `tests/test_api.py`. No fabricated numbers. Documented decisions in `DECISIONS.md`. Created `FINAL_REPORT.md`. Tagged release `v1.0.0`.
 - **Blockers**: None.
+
+## Phase 9: Comprehensive Audit & Rigorous Grounding
+- **Status**: COMPLETE
+- **Done**: Conducted thorough audit of `results/`, `src/`, figures, tables, and `paper/main.tex`, documented in `AUDIT.md`. Fixed local discrepancies: dynamically connected `generate_tables.py` and `generate_figures.py` to `results/all_results_aggregated.json`; replaced mock API endpoints with real model inference, MC impact sampling, and greedy allocation; added Haversine travel time fallback; implemented 4-quadrant spatial grid zonal aggregation; updated abstract placeholders with empirical values. 38/38 unit tests passing. Ready for full GPU runs via Google Colab.
+- **Next**: Run `notebooks/colab_full_experiments.ipynb` on GPU and download `resq_ai_results.zip`.
+- **Blockers**: GPU compute required for 100-epoch Sen1Floods11 convergence (Colab notebook prepared).

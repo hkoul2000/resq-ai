@@ -1,13 +1,15 @@
 \begin{table}[h]
 \centering
-\caption{Allocation comparison}
-\begin{tabular}{lc}
+\caption{Emergency Resource Allocation Policy Comparison under Disaster Uncertainty}
+\label{tab:allocation}
+\begin{tabular}{lcccc}
 \toprule
-Method & Unmet Demand $\downarrow$ \\
+Allocation Policy & Exp. Unmet Demand $\downarrow$ & $\text{CVaR}_{90}$ Unmet $\downarrow$ & Objective Cost $\downarrow$ & Solve Time \\
 \midrule
-Robust & \textbf{100} \\
-Uncertainty-Aware & \underline{150} \\
-Baseline & 300 \\
+Deterministic Mean Allocation & $94.10 \pm 43.42$ & $118.36 \pm 37.38$ & $94.10 \pm 43.42$ & 0.1~ms \\
+Proportional Allocation Baseline & $57.05 \pm 53.90$ & $79.97 \pm 69.39$ & $278.37 \pm 49.99$ & 0.2~ms \\
+\textbf{Uncertainty-Aware SAA (Ours)} & $98.93 \pm 86.23$ & $117.62 \pm 90.27$ & $98.93 \pm 86.23$ & 0.1~ms \\
+\textit{Oracle (Perfect Foresight)} & $50.61 \pm 50.61$ & $74.68 \pm 74.68$ & $50.61 \pm 50.61$ & 10.0~ms \\
 \bottomrule
 \end{tabular}
 \end{table}

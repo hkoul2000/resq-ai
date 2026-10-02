@@ -1,13 +1,14 @@
 \begin{table}[h]
 \centering
-\caption{Fusion ablation}
-\begin{tabular}{lc}
+\caption{Comparison of Fusion Architectures for Remote Sensing and Climate Data}
+\label{tab:fusion}
+\begin{tabular}{lcc}
 \toprule
-Method & IoU \\
+Fusion Mechanism & IoU $\uparrow$ & F1 $\uparrow$ \\
 \midrule
-Cross-Attention & \textbf{0.85} \\
-Early Fusion & \underline{0.81} \\
-Late Fusion & 0.78 \\
+\textbf{Gated Cross-Attention + FiLM (ResQNet)} & \textbf{$0.119 \pm 0.012$} & \textbf{$0.213 \pm 0.020$} \\
+Early Concatenation & $0.030 \pm 0.030$ & $0.057 \pm 0.057$ \\
+Concat Bottleneck (No FiLM / Cross-Attn) & $0.000 \pm 0.000$ & $0.000 \pm 0.000$ \\
 \bottomrule
 \end{tabular}
 \end{table}

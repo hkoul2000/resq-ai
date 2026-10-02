@@ -34,3 +34,8 @@
 **Decision**: Calibrate non-conformity scores on validation sets using $(1-\alpha)(1 + 1/n)$ finite-sample correction.
 **Reasoning**: Guarantees distribution-free marginal coverage guarantees for binary flood classification sets even under finite validation sample sizes.
 **Date**: 2026-10-02
+
+## D008: Dynamic Experiment Aggregation and Robust Offline Fallbacks
+**Decision**: Connect `generate_tables.py` and `generate_figures.py` dynamically to `results/all_results_aggregated.json`. Implement spatial grid quadrant zonal aggregation in `src/impact/assessment.py` and Haversine distance travel time in `src/optimization/travel_time.py`.
+**Reasoning**: Ensures zero mock/placeholder discrepancies between `results/` artifacts and generated paper tables/figures. Guarantees that the entire evaluation, impact assessment, and allocation pipeline operates reliably offline without depending on external web services or missing C libraries.
+**Date**: 2026-10-02
