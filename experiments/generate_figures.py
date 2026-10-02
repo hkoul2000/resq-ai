@@ -164,7 +164,9 @@ def generate_qualitative():
 def generate_impact():
     data = load_or_mock_data('impact.json', mock_impact)
     fig, ax = plt.subplots(figsize=(3.5, 3.5))
-    ax.boxplot(data, labels=['Zone A', 'Zone B', 'Zone C'])
+    ax.boxplot(data)
+    ax.set_xticks(range(1, len(data) + 1))
+    ax.set_xticklabels(['Zone A', 'Zone B', 'Zone C'])
     ax.set_ylabel('Affected Population')
     save_fig(fig, 'fig_impact')
 

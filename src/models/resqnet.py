@@ -455,43 +455,49 @@ class ResQNet(nn.Module):
         x: torch.Tensor,
     ) -> tuple[torch.Tensor, list[torch.Tensor]]:
         """Run image through encoder, return bottleneck + skip features."""
-        if hasattr(encoder, "forward_features"):
-            # timm model with features_only=True
-            features = encoder(x)
-            return features[-1], features[:-1]
-        else:
+        if isinstance(encoder, nn.ModuleList):
             # Simple fallback encoder
             skips = []
             for layer in encoder:
                 x = layer(x)
                 skips.append(x)
             return skips[-1], skips[:-1]
+        else:
+            # timm model with features_only=True returns list of feature maps
+            features = encoder(x)
+            return features[-1], features[:-1]
 
     def forward(
         self,
-        sar: torch.Tensor | None = None,
+        sar: torch.Tensor | dict[str, Any] | None = None,
         optical: torch.Tensor | None = None,
         geo: torch.Tensor | None = None,
         rainfall: torch.Tensor | None = None,
         modality_mask: torch.Tensor | None = None,
+        **kwargs: Any,
     ) -> dict[str, torch.Tensor]:
         """Forward pass.
 
         Args:
-            sar: SAR input (B, 2, H, W)
+            sar: SAR input (B, 2, H, W) or batch dictionary containing modalities
             optical: Optical input (B, 13, H, W)
             geo: Geographic features (B, C_geo, H, W)
             rainfall: Rainfall sequence (B, seq_len, 1)
             modality_mask: (B, 5) binary mask [sar, optical, dem, landcover, rainfall]
-
-        Returns:
-            dict with keys:
-                - logits: (B, 1, H, W) raw logits
-                - probs: (B, 1, H, W) sigmoid probabilities
-                - (if evidential): alpha, beta, evidence
         """
-        B = (sar if sar is not None else optical).shape[0]
-        device = (sar if sar is not None else optical).device
+        if isinstance(sar, dict):
+            batch = sar
+            sar = batch.get("sar")
+            optical = batch.get("optical")
+            geo = batch.get("geo")
+            rainfall = batch.get("rainfall")
+            modality_mask = batch.get("modality_mask")
+
+        primary = sar if sar is not None else optical
+        if primary is None:
+            raise ValueError("At least one of SAR or Optical must be provided")
+        B = primary.shape[0]
+        device = primary.device
 
         if modality_mask is None:
             modality_mask = torch.ones(B, 5, device=device)

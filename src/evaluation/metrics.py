@@ -1,10 +1,13 @@
 """Evaluation metrics for flood segmentation and uncertainty quantification."""
 
-import torch
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Tuple, Union
+
 import numpy as np
-from typing import Dict, Any, Union, Tuple, List
+import torch
 from scipy import stats
-from sklearn.metrics import roc_auc_score, average_precision_score
+from sklearn.metrics import average_precision_score, roc_auc_score
 
 class FloodMetrics:
     """Computes basic segmentation metrics."""
@@ -41,6 +44,11 @@ class FloodMetrics:
             "auroc": auroc,
             "auprc": auprc
         }
+
+    @classmethod
+    def compute(cls, probs: torch.Tensor, labels: torch.Tensor, threshold: float = 0.5) -> Dict[str, float]:
+        """Alias for compute_all."""
+        return cls.compute_all(probs, labels, threshold)
 
 class CalibrationMetrics:
     @staticmethod

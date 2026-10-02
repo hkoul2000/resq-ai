@@ -21,7 +21,11 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.amp import GradScaler, autocast
-import mlflow
+try:
+    import mlflow
+    HAS_MLFLOW = True
+except ImportError:
+    HAS_MLFLOW = False
 
 from src.models.resqnet import ResQNet
 
@@ -81,12 +85,18 @@ class BCEWithDiceLoss(nn.Module):
         self.bce = nn.BCEWithLogitsLoss()
 
     def forward(self, logits, targets):
-        bce_loss = self.bce(logits, targets)
+        if targets.dim() == 3:
+            targets = targets.unsqueeze(1)
+        if logits.shape[-2:] != targets.shape[-2:]:
+            logits = torch.nn.functional.interpolate(
+                logits, size=targets.shape[-2:], mode="bilinear", align_corners=False
+            )
+        bce_loss = self.bce(logits, targets.float())
         probs = torch.sigmoid(logits)
         
         # Flatten
-        probs = probs.view(-1)
-        targets = targets.view(-1)
+        probs = probs.reshape(-1)
+        targets = targets.reshape(-1)
         
         intersection = (probs * targets).sum()
         dice_loss = 1 - (2. * intersection + self.smooth) / (probs.sum() + targets.sum() + self.smooth)
@@ -95,6 +105,12 @@ class BCEWithDiceLoss(nn.Module):
 
 def compute_metrics(logits: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5) -> Dict[str, float]:
     """Compute basic classification/segmentation metrics."""
+    if targets.dim() == 3:
+        targets = targets.unsqueeze(1)
+    if logits.shape[-2:] != targets.shape[-2:]:
+        logits = torch.nn.functional.interpolate(
+            logits, size=targets.shape[-2:], mode="bilinear", align_corners=False
+        )
     probs = torch.sigmoid(logits)
     preds = (probs > threshold).float()
     
@@ -246,7 +262,7 @@ class Trainer:
             metrics = {**train_metrics, **val_metrics}
             logger.info(f"Epoch {epoch+1}/{epochs} - " + ", ".join([f"{k}: {v:.4f}" for k, v in metrics.items()]))
             
-            if mlflow_enabled:
+            if mlflow_enabled and HAS_MLFLOW:
                 mlflow.log_metrics(metrics, step=epoch)
                 
             val_loss = metrics["val_loss"]

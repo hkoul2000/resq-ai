@@ -248,7 +248,7 @@ def test_evidential_loss():
     target = torch.randint(0, C, (B, H, W))
 
     loss_fn = EvidentialLoss(num_classes=C)
-    loss = loss_fn(evidence, target)
+    loss = loss_fn(evidence, target, epoch=1)
     assert loss.dim() == 0
     assert not torch.isnan(loss)
 
@@ -322,3 +322,41 @@ def test_rainfall_encoder():
     x = torch.randn(2, 30, 1)
     out = encoder(x)
     assert out.shape == (2, 64)
+
+
+@pytest.mark.smoke
+def test_allocation_problem():
+    """Test allocation problem creation and baseline solving."""
+    from src.optimization.allocation import (
+        AllocationProblem,
+        GreedyAllocation,
+        ProportionalAllocation,
+    )
+
+    problem = AllocationProblem(
+        zones=["zone_1", "zone_2"],
+        depots=["depot_A", "depot_B"],
+        capacities={"depot_A": 300.0, "depot_B": 300.0},
+        travel_times={
+            ("zone_1", "depot_A"): 10.0,
+            ("zone_1", "depot_B"): 25.0,
+            ("zone_2", "depot_A"): 35.0,
+            ("zone_2", "depot_B"): 12.0,
+        },
+        scenarios={
+            "s1": {"zone_1": 100.0, "zone_2": 150.0},
+            "s2": {"zone_1": 120.0, "zone_2": 200.0},
+        },
+        scenario_probs={"s1": 0.6, "s2": 0.4},
+        max_response_time=45.0,
+    )
+
+    solver_greedy = GreedyAllocation()
+    sol_greedy = solver_greedy.solve(problem)
+    assert sol_greedy.status == "optimal"
+    assert sol_greedy.objective_value >= 0
+    assert sum(sol_greedy.unmet_demand.values()) == 0.0
+
+    solver_prop = ProportionalAllocation()
+    sol_prop = solver_prop.solve(problem)
+    assert sol_prop.status == "optimal"

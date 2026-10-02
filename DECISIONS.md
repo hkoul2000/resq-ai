@@ -9,3 +9,28 @@
 **Decision**: All development done CPU-only with --smoke mode. Full experiments via Colab notebooks.
 **Reasoning**: Dev machine has no GPU. Code designed with T4 16GB target. Smoke tests validate logic on CPU.
 **Date**: 2026-10-02
+
+## D003: Timm Backbone Encoder Feature Extraction
+**Decision**: In `ResQNet._encode_image`, check `isinstance(encoder, nn.ModuleList)` to branch between custom fallback encoder and timm's `features_only=True` wrapper.
+**Reasoning**: In modern `timm` releases, `features_only=True` models do not define `forward_features` and calling `encoder(x)` directly returns the list of feature maps across downsampling stages.
+**Date**: 2026-10-02
+
+## D004: Pure NumPy/SciPy Hydrological Terrain Analysis
+**Decision**: Implement D8 flow routing, Height Above Nearest Drainage (HAND), and Topographic Wetness Index (TWI) directly in pure NumPy and SciPy.
+**Reasoning**: Eliminates fragile C-bindings to external geospatial dependencies (like GDAL and pysheds), enabling 100% platform-independent elevation processing across Windows, Linux, and Colab environments.
+**Date**: 2026-10-02
+
+## D005: Flexible Dictionary & Keyword Unpacking in Model Forward Pass
+**Decision**: Allow `ResQNet.forward` to accept either explicit keyword tensors (`sar`, `optical`, `geo`, `rainfall`) or a single batch dictionary.
+**Reasoning**: Ensures seamless interoperability with PyTorch DataLoaders, standard `Trainer` training loops, and test-time evaluation pipelines without redundant manual unpacking.
+**Date**: 2026-10-02
+
+## D006: Standalone Optimization Solvers for Resource Allocation
+**Decision**: Provide standalone vectorized Greedy and Proportional allocation algorithms in addition to Pyomo MILP formulations.
+**Reasoning**: Ensures allocation evaluations and Monte Carlo decision simulations run reliably in environments where external MILP binaries (e.g., HiGHS or CBC) are not pre-installed.
+**Date**: 2026-10-02
+
+## D007: Split Conformal Risk Control with Empirical Quantile Adjustment
+**Decision**: Calibrate non-conformity scores on validation sets using $(1-\alpha)(1 + 1/n)$ finite-sample correction.
+**Reasoning**: Guarantees distribution-free marginal coverage guarantees for binary flood classification sets even under finite validation sample sizes.
+**Date**: 2026-10-02

@@ -13,8 +13,12 @@ import time
 import logging
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
-import numpy as np
-import pyomo.environ as pyo
+try:
+    import pyomo.environ as pyo
+    HAS_PYOMO = True
+except ImportError:
+    HAS_PYOMO = False
+    pyo = None
 
 logger = logging.getLogger(__name__)
 
