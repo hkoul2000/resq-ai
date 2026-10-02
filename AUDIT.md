@@ -1,63 +1,50 @@
 # ResQ-AI: Scientific & Engineering Audit Report
 
-**Date of Audit**: October 2, 2026  
+**Date of Audit**: October 3, 2026  
 **Auditor**: Autonomous AI Research Scientist (Antigravity)  
 **Repository**: `c:\Users\u430\OneDrive\Desktop\PROJECTS\RESQ-AI`  
-**Current Tag**: `v1.0.0` (Preparing `v1.0.1`)  
+**Current Tag**: `v1.0.1`  
 
 ---
 
 ## Executive Summary
 
-In adherence to non-negotiable research rules ("Never fabricate results, metrics, datasets, or citations; verify every citation; log all decisions"), this audit provides a completely transparent, line-by-line accounting of:
+In adherence to non-negotiable research rules ("Never fabricate results, metrics, datasets, or citations; verify every citation; log all decisions"), this audit provides an honest, line-by-line accounting of:
 1. The origin, hardware, dataset size, epochs, and random seeds for every file in `results/`.
-2. Every occurrence of synthetic, placeholder, or fallback logic in `src/`.
-3. Which paper tables and figures depend on non-final/smoke run results.
-4. Any claims in `paper/main.tex` that currently exceed the empirical scope of the local smoke runs.
-5. Fixes applied locally during this audit.
-6. Exact step-by-step instructions for executing the full GPU training pipeline on Google Colab and importing the results back.
+2. The explicit identification of synthetic data in earlier runs and the absence of physical feature correlation.
+3. The **Random Forest baseline flaw**: why earlier runs reported IoU $\approx 0.75\text{--}0.87$ (patch-level binary classification rather than pixel-level segmentation).
+4. The **Allocation identical outputs bug**: why Deterministic and Greedy produced identical results and why cost equaled unmet demand.
+5. Exact code modifications enforcing real Sen1Floods11 data, removing silent fallbacks, and enabling GPU training via Google Colab.
 
 ---
 
 ## 1. Audit of Results in `results/`
 
-All current JSON files under `results/` were generated locally using the CPU smoke pipeline (`python experiments/run_experiments.py --smoke`). 
+All JSON files currently in `results/` (`e1` through `e7`, and `all_results_aggregated.json`) were generated using `--smoke` mode on a CPU-only Windows dev machine.
 
-| File | Experiment Name | Dataset Used | Epochs / Batches | Hardware | Seeds | Status |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `e1_seed_42.json` | E1: Model Comparison | Synthetic (32 train, 8 val, 8 test chips, 64x64) | 2 epochs (2 batches/epoch) | CPU (x86_64) | Seed 42 | Smoke Run |
-| `e1_seed_123.json` | E1: Model Comparison | Synthetic (32 train, 8 val, 8 test chips, 64x64) | 2 epochs (2 batches/epoch) | CPU (x86_64) | Seed 123 | Smoke Run |
-| `e2_seed_42.json` | E2: Ablation Studies | Synthetic (32 train, 8 val, 8 test chips, 64x64) | 2 epochs (2 batches/epoch) | CPU (x86_64) | Seed 42 | Smoke Run |
-| `e2_seed_123.json` | E2: Ablation Studies | Synthetic (32 train, 8 val, 8 test chips, 64x64) | 2 epochs (2 batches/epoch) | CPU (x86_64) | Seed 123 | Smoke Run |
-| `e3_seed_42.json` | E3: UQ Calibration | Synthetic (32 train, 8 val, 8 test chips, 64x64) | 2 epochs (2 batches/epoch) | CPU (x86_64) | Seed 42 | Smoke Run |
-| `e3_seed_123.json` | E3: UQ Calibration | Synthetic (32 train, 8 val, 8 test chips, 64x64) | 2 epochs (2 batches/epoch) | CPU (x86_64) | Seed 123 | Smoke Run |
-| `e4_seed_42.json` | E4: Conformal Coverage | Synthetic (32 train, 8 val, 8 test chips, 64x64) | 2 epochs (2 batches/epoch) | CPU (x86_64) | Seed 42 | Smoke Run |
-| `e4_seed_123.json` | E4: Conformal Coverage | Synthetic (32 train, 8 val, 8 test chips, 64x64) | 2 epochs (2 batches/epoch) | CPU (x86_64) | Seed 123 | Smoke Run |
-| `e5_seed_42.json` | E5: Input Degradation | Synthetic (32 train, 8 val, 8 test chips, 64x64) | 2 epochs (2 batches/epoch) | CPU (x86_64) | Seed 42 | Smoke Run |
-| `e5_seed_123.json` | E5: Input Degradation | Synthetic (32 train, 8 val, 8 test chips, 64x64) | 2 epochs (2 batches/epoch) | CPU (x86_64) | Seed 123 | Smoke Run |
-| `e6_seed_42.json` | E6: Decision Allocation | Synthetic Demand Scenarios (10 scenarios) | N/A (Linear / MILP / SAA) | CPU (x86_64) | Seed 42 | Smoke Run |
-| `e6_seed_123.json` | E6: Decision Allocation | Synthetic Demand Scenarios (10 scenarios) | N/A (Linear / MILP / SAA) | CPU (x86_64) | Seed 123 | Smoke Run |
-| `e7_seed_42.json` | E7: Latency & Profiling | Synthetic Tensors (Batch size 1, 64x64) | 10 warmup + 20 timed passes | CPU (x86_64) | Seed 42 | Smoke Run |
-| `e7_seed_123.json` | E7: Latency & Profiling | Synthetic Tensors (Batch size 1, 64x64) | 10 warmup + 20 timed passes | CPU (x86_64) | Seed 123 | Smoke Run |
-| `all_results_aggregated.json` | Aggregated E1–E7 | Aggregated from 2 seeds (`[42, 123]`) | 2 epochs | CPU (x86_64) | Seeds 42, 123 | Smoke Aggregated |
+| File | Experiment Name | Dataset Used | Dataset Size | Epochs / Batches | Hardware | Seeds | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `e1_seed_*.json` | E1: Model Comparison | `SyntheticFloodDataset` | 32 train, 8 val, 8 test ($64\times 64$) | 2 epochs (2 batches/epoch) | CPU (x86_64) | 42, 123 | Synthetic Smoke |
+| `e2_seed_*.json` | E2: Ablation Studies | `SyntheticFloodDataset` | 32 train, 8 val, 8 test ($64\times 64$) | 2 epochs (2 batches/epoch) | CPU (x86_64) | 42, 123 | Synthetic Smoke |
+| `e3_seed_*.json` | E3: UQ Calibration | `SyntheticFloodDataset` | 32 train, 8 val, 8 test ($64\times 64$) | 2 epochs (2 batches/epoch) | CPU (x86_64) | 42, 123 | Synthetic Smoke |
+| `e4_seed_*.json` | E4: Conformal Coverage | `SyntheticFloodDataset` | 32 train, 8 val, 8 test ($64\times 64$) | 2 epochs (2 batches/epoch) | CPU (x86_64) | 42, 123 | Synthetic Smoke |
+| `e5_seed_*.json` | E5: Input Degradation | `SyntheticFloodDataset` | 32 train, 8 val, 8 test ($64\times 64$) | 2 epochs (2 batches/epoch) | CPU (x86_64) | 42, 123 | Synthetic Smoke |
+| `e6_seed_*.json` | E6: Decision Allocation | Synthetic Demand Scenarios | 10 scenarios across 5 zones | Point & Heuristic | CPU (x86_64) | 42, 123 | Synthetic Smoke |
+| `e7_seed_*.json` | E7: Latency & Profiling | Synthetic Tensors ($B=1, 64\times 64$) | 10 warmup + 20 timed passes | 2 epochs | CPU (x86_64) | 42, 123 | Synthetic Smoke |
+| `all_results_aggregated.json` | Aggregated E1–E7 | Aggregated from smoke runs | 32 synthetic chips | 2 epochs | CPU (x86_64) | 42, 123 | Synthetic Smoke |
 
-### Observations:
-- **No Fabrications**: Every number in these JSON files was produced by executing the corresponding python script and saving `json.dump`.
-- **Limitation**: The local development machine lacks an NVIDIA GPU (running CPU-only Windows x86_64). Therefore, training full ResNet-34 encoders for 100 epochs on 4,831 $512 \times 512$ multi-modal tiles is computationally infeasible locally (~40+ hours). The smoke run proves pipeline correctness, convergence dynamics, and tensor dimensions end-to-end.
-
----
-
-## 2. Audit of Synthetic, Placeholder, and Fallback Code in `src/`
-
-| File & Location | Purpose & Description | Fallback / Placeholder Nature | Audit Action & Fix Status |
-| :--- | :--- | :--- | :--- |
-| `src/data/synthetic.py` (L20–180) | `SyntheticFloodDataset` simulating SAR, Optical, DEM, Rainfall tensors. | Deterministic NumPy synthetic generation with circular flood seeds for quick tests without 20GB downloads. | **Valid by design**. Retained for `--smoke` tests and unit tests. |
-| `src/data/download.py` (L45–62) | `download_copernicus_dem`, `download_esa_worldcover`, `download_chirps_rainfall`. | Log mock prints (`logger.info("Mock downloading DEM...")`) because direct Copernicus Hub requires credentials. | **Documented**. Real downloading should occur in cloud container where AWS credentials and high bandwidth exist. |
-| `src/impact/assessment.py` (L88–95) | `aggregate_to_zones` | Originally returned `{"zone_1": 0.0}` placeholder if `rasterstats` was absent. | **FIXED**: Implemented real spatial grid quadrant aggregation (`zone_nw`, `zone_ne`, `zone_sw`, `zone_se`) using NumPy slicing when vector polygon files are unavailable. |
-| `src/optimization/travel_time.py` (L20–25) | `compute_travel_times` | Originally returned empty `{}` if OSMnx failed to connect or if offline. | **FIXED**: Added great-circle Haversine distance formula fallback assuming disaster vehicle speed ($30\text{ km/h} = 0.5\text{ km/min}$). Made `osmnx` import optional with graceful handling. |
-| `src/models/resqnet.py` (L440–470) | `SimpleEncoder` | Fallback convolutional feature extractor used only if `timm` library is missing. | **Retained**. `timm` is installed and active in `.venv`. |
-| `src/models/resqnet.py` (L525–540) | Missing modality zeros | Inserts zero tensors if SAR, Optical, or Geo modalities are dropped during training. | **Valid scientific technique** (Modality Dropout, Cavazza et al., 2024). |
-| `app/api/main.py` (L60–94) | FastAPI endpoints (`/predict`, `/impact`, `/allocate`) | Originally returned hardcoded mock 2x2 lists. | **FIXED**: Wired `/predict` to real `ResQNet` forward pass and UQ variance estimation; `/impact` to Monte Carlo impact distribution sampling; `/allocate` to real `GreedyAllocation` solver. |
+### Critical Findings on Earlier Results:
+1. **Synthetic Data**: Every experiment E1–E7 in `results/` was run on `SyntheticFloodDataset`, NOT real Sentinel-1/2 satellite imagery.
+2. **Zero Feature-Label Correlation in Synthetic Generator**: In the original `SyntheticFloodDataset`, SAR was generated as Gaussian noise `N(-15, 5)`, Optical as `N(1500, 500)`, and labels as independent random geometric ellipses. Because there was zero mutual information between inputs and labels, deep learning models could not learn, resulting in IoU $\approx 0.00\text{--}0.12$.
+3. **The Random Forest Anomaly (IoU 0.75 - 0.87)**:
+   - In `experiments/run_experiments.py`, Random Forest was trained on patch-level mean summaries (`sar_mean`, `opt_mean`) predicting binary patch flood occurrence (`labels.mean() > 0.1`), NOT pixel-level flood segmentation!
+   - Random Forest was evaluated on 8 scalar patch predictions, while ResQNet and U-Net were evaluated on $8 \times 64 \times 64 = 32,768$ individual pixels. This was an invalid comparison that generated an artificial IoU of $0.812$.
+   - **Resolution**: Random Forest must be trained on subsampled individual pixels (22 multi-modal features per pixel) and evaluated on the exact same test pixels, spatial resolution, and metrics as the neural models.
+4. **The Allocation Identical Results & Cost Bug**:
+   - In `experiments/run_experiments.py` E6, `Deterministic_Mean` executed `greedy_solver.solve(det_problem)` where `det_problem` contained the mean demand. However, `GreedyAllocation.solve(problem)` already computed the mean demand internally. Thus, both policies were executing the exact same greedy heuristic loop on the exact same demand vector!
+   - Furthermore, `objective_value` was assigned as `float(np.mean(unmet_values_det))`, completely omitting the transportation cost term ($\lambda \sum t_{ij} x_{ij}$).
+   - SAA had higher unmet demand because it hedged by allocating to 85th percentile demand using the same greedy heuristic, which exhausted depot capacity early and starved subsequent zones under tight budgets.
+   - **Resolution**: Replace heuristic calls with true Linear Programming formulations (`scipy.optimize.linprog(method='highs')`) for both Deterministic and SAA. Correct the objective value calculation. Perform sensitivity analysis across capacity tightness and demand variance.
 
 ---
 
