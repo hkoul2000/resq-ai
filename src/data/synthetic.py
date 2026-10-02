@@ -124,33 +124,48 @@ class SyntheticFloodDataset(Dataset):
         rng = np.random.default_rng(self.seed + idx)
         h, w = self.crop_size, self.crop_size
 
-        # Generate SAR-like data (log-scale backscatter)
-        sar = rng.normal(-15.0, 5.0, (self.sar_channels, h, w)).astype(np.float32)
+        # Generate flood label first so features correlate physically
+        label = self._generate_flood_label(h, w)
+        valid_mask = np.ones((h, w), dtype=np.float32)
+        flood_mask = (label == 1.0)
 
-        # Generate optical-like data (reflectance values)
+        # Generate SAR-like data (log-scale backscatter, water exhibits specular reflection -> low backscatter)
+        sar = rng.normal(-15.0, 4.0, (self.sar_channels, h, w)).astype(np.float32)
+        sar[0, flood_mask] -= 8.0  # VV drops significantly over water
+        sar[1, flood_mask] -= 7.0  # VH drops over water
+
+        # Generate optical-like data (reflectance values, water absorbs NIR/SWIR)
         optical = np.clip(
-            rng.normal(1500.0, 500.0, (self.optical_channels, h, w)),
+            rng.normal(1600.0, 400.0, (self.optical_channels, h, w)),
             0, 10000
         ).astype(np.float32)
+        if self.optical_channels >= 12:
+            optical[2, flood_mask] += 300.0  # Green band reflectance
+            optical[7, flood_mask] = np.clip(optical[7, flood_mask] - 600.0, 50.0, None)  # NIR absorption
+            optical[11, flood_mask] = np.clip(optical[11, flood_mask] - 700.0, 50.0, None)  # SWIR absorption
 
         # Generate geo features (elevation, slope, HAND, TWI, dist_drainage, landcover)
         geo = np.zeros((self.geo_channels, h, w), dtype=np.float32)
-        geo[0] = rng.normal(100.0, 50.0, (h, w))   # elevation
+        geo[0] = rng.normal(100.0, 40.0, (h, w))  # elevation
+        geo[0, flood_mask] -= 15.0  # Floods accumulate in depressions
         geo[1] = np.abs(rng.normal(5.0, 3.0, (h, w)))  # slope
-        geo[2] = np.abs(rng.normal(10.0, 8.0, (h, w)))  # HAND
+        geo[1, flood_mask] *= 0.3  # Floods occur on flat terrain
+        geo[2] = np.abs(rng.normal(10.0, 6.0, (h, w)))  # HAND
+        geo[2, flood_mask] = np.clip(geo[2, flood_mask] - 8.0, 0.2, None)  # Low HAND near water
         geo[3] = rng.normal(8.0, 3.0, (h, w))  # TWI
-        geo[4] = np.abs(rng.normal(500.0, 300.0, (h, w)))  # dist to drainage
+        geo[3, flood_mask] += 3.0  # High wetness index
+        geo[4] = np.abs(rng.normal(400.0, 200.0, (h, w)))  # dist to drainage
+        geo[4, flood_mask] = np.clip(geo[4, flood_mask] - 250.0, 10.0, None)
         if self.geo_channels > 5:
             geo[5] = rng.integers(0, 11, (h, w)).astype(np.float32)  # landcover class
+            geo[5, flood_mask] = 8.0  # Water body / flooded land class
 
-        # Generate rainfall sequence
+        # Generate rainfall sequence (correlated with flood fraction)
+        flood_fraction = float(np.mean(label))
+        rain_base = 5.0 + 35.0 * flood_fraction
         rainfall = np.abs(
-            rng.normal(5.0, 10.0, (self.rainfall_seq_len, 1))
+            rng.normal(rain_base, 8.0, (self.rainfall_seq_len, 1))
         ).astype(np.float32)
-
-        # Generate flood label
-        label = self._generate_flood_label(h, w)
-        valid_mask = np.ones((h, w), dtype=np.float32)
 
         # Modality availability mask
         modality_mask = np.ones(5, dtype=np.float32)
