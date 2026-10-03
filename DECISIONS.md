@@ -55,3 +55,13 @@
 **Reasoning**: Replaces the flawed patch-classification approach (which previously yielded an artificial IoU of 0.81) with true pixel-level segmentation, ensuring scientific integrity and fair benchmark comparison.
 **Date**: 2026-10-03
 
+## D012: Multi-Seed Statistical Reporting and Significance Testing
+**Decision**: Standardize experiment evaluation across at least 3 random seeds ([42, 123, 456]), reporting mean, standard deviation, 95% confidence intervals, and paired Wilcoxon signed-rank significance tests.
+**Reasoning**: Ensures all scientific claims meet rigorous statistical standards and eliminates reliance on single-seed empirical variance.
+**Date**: 2026-10-03
+
+## D013: Transparent CPU Smoke Reporting & Dedicated GPU Execution Instructions
+**Decision**: Honestly present all local benchmarking metrics in FINAL_REPORT.md and paper/main.tex as CPU smoke runs with hydrologically coupled synthetic data, while isolating full-scale 100-epoch GPU instructions in COLAB_INSTRUCTIONS.md.
+**Reasoning**: Upholds the core principle of scientific integrity ("never fabricate results or claim GPU execution when local hardware is CPU-only"), while providing seamless reproducibility for GPU environments.
+**Date**: 2026-10-03
+

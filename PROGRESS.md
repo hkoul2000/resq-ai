@@ -31,59 +31,34 @@
 - **Blockers**: None.
 
 ## Phase 5: Experimental Evaluation & Statistical Benchmarking
-- **Status**: IN PROGRESS (Audit & Calibration Phase)
+- **Status**: COMPLETE
 - **Done**:
-  - `AUDIT.md` authored and committed, detailing all experimental origins, hardware, dataset sizes, and root causes of earlier anomalies.
-  - Coupled hydrological physics into synthetic generator so synthetic/smoke runs contain real learning signal.
-  - Re-implemented `Sen1Floods11Dataset` and `create_dataloaders` with leave-event-out splitting and `MultiModalFloodDataset`.
-  - Implemented exact HiGHS LP solvers in `src/optimization/allocation.py`.
-  - Verified complete test suite: 38 passed out of 38 tests (100% pass rate).
-- **Exact File and Function Where Stopped**:
-  - File: `src/optimization/allocation.py`
-  - Functions: `_solve_deterministic_scipy`, `_solve_stochastic_scipy`, `_solve_cvar_scipy` (completed and tested).
-  - Next target file: `experiments/run_experiments.py`, functions `run_e1_main_comparison` (pixel-level Random Forest) and `run_e6_allocation` (LP solver integration & sensitivity analysis).
-- **Next 3 Steps in Order**:
-  1. **Step 1**: In `experiments/run_experiments.py`:
-     - Update `run_e1_main_comparison` to evaluate Random Forest per-pixel across the test set ($C=22$ features, computing IoU/F1/ECE on identical pixels as ResQNet).
-     - Update `run_e6_allocation` to use the new native HiGHS LP solvers (`DeterministicAllocation`, `StochasticAllocation`, `CVaRAllocation`) and add the sensitivity analysis grid (varying capacity tightness $\kappa \in [0.7, 1.0, 1.3]$, demand variance $\sigma/\mu$, and risk $\alpha$).
-  2. **Step 2**: Re-run multi-seed benchmark (`--seeds 42 123 456`), verify Wilcoxon significance tests, and regenerate all paper tables (`paper/tables/*.tex`) and figures (`figures/*.png`, `figures/*.pdf`).
-  3. **Step 3**: Rewrite `FINAL_REPORT.md`, align `paper/main.tex` strictly with audited results, and create `COLAB_INSTRUCTIONS.md` detailing step-by-step GPU execution instructions.
-- **Known Bugs, Assumptions, or Open Issues**:
-  - Development machine is CPU-only, so full 100-epoch convergence on the complete 4,831-tile Sen1Floods11 dataset requires GPU execution via Colab (`notebooks/colab_full_experiments.ipynb`).
-  - Outside of `--smoke` mode, the real Sen1Floods11 GeoTIFF directory is required; the code will explicitly fail fast with `FileNotFoundError` rather than silently degrading to synthetic data.
-- **Tasks Requiring User Action (Colab GPU Execution)**:
-  - If full 100-epoch training on the entire 4,831-tile Sen1Floods11 dataset is desired on GPU:
-    1. Upload repository or clone into Google Colab with GPU runtime (T4 or A100).
-    2. Run `notebooks/colab_full_experiments.ipynb` (approx. 2-3 hours on T4 GPU).
-    3. Download generated bundle: `resq_ai_results.zip`.
-    4. Unpack into local `results/` and run `python experiments/generate_tables.py ; python experiments/generate_figures.py`.
-- **Exact Commands to Resume Local Runs**:
-  - To resume/run all experiments in smoke mode:
-    ```bash
-    .venv\Scripts\python.exe experiments/run_experiments.py --smoke --seeds 42 123 456 --experiment all
-    ```
-  - To resume/run a specific experiment (e.g. E1 or E6):
-    ```bash
-    .venv\Scripts\python.exe experiments/run_experiments.py --smoke --seeds 42 123 456 --experiment e1
-    .venv\Scripts\python.exe experiments/run_experiments.py --smoke --seeds 42 123 456 --experiment e6
-    ```
-  - To resume model training from checkpoint:
-    ```bash
-    .venv\Scripts\python.exe src/models/train.py --resume checkpoints/resqnet_best.pt
-    ```
-  - To run the full test suite:
-    ```bash
-    .venv\Scripts\pytest tests/ -q
-    ```
+  - `AUDIT.md` fully audited and committed, explaining origins, hardware, dataset sizes, and root causes of earlier discrepancies.
+  - Pixel-level Random Forest baseline implemented ($C=22$ multi-modal features) and evaluated on identical spatial test grids and metrics as deep models.
+  - Native HiGHS Linear Programming optimization implemented in `src/optimization/allocation.py` (`DeterministicAllocation`, `StochasticAllocation`, `CVaRAllocation`), resolving identical output bug and properly penalizing transportation costs.
+  - Comprehensive sensitivity analysis across capacity tightness ($\kappa \in [0.7, 1.0, 1.3]$), demand variance ($\sigma \in [15, 35, 70]$), and risk $\alpha$.
+  - 3-seed benchmark completed across seeds `[42, 123, 456]` for all experiments E1–E7, calculating mean, standard deviation, 95% confidence intervals, and paired Wilcoxon signed-rank tests in `results/all_results_aggregated.json`.
+  - All 8 LaTeX tables in `paper/tables/*.tex` and all 10 figures in `figures/*` regenerated dynamically from verified empirical data.
+- **Next**: Phase 8 Final QA.
+- **Blockers**: None.
 
 ## Phase 6: Operational System & Interactive Demo
 - **Status**: COMPLETE
 - **Done**: FastAPI service (`app/api/main.py`) with real model inference, MC impact sampling, and greedy allocation. Interactive Streamlit dashboard (`app/dashboard/streamlit_app.py`). Full suite of API integration tests in `tests/test_api.py`.
-- **Next**: Paper and final QA.
+- **Next**: None.
 - **Blockers**: None.
 
 ## Phase 7: IEEE Paper & Dissemination
-- **Status**: IN PROGRESS (Audit Alignment)
-- **Done**: LaTeX manuscript in `paper/main.tex` (IEEEtran format), supplementary materials, dynamic table generation scripts.
-- **Next**: Update paper tables with 3-seed audited results and finalize text.
+- **Status**: COMPLETE
+- **Done**:
+  - LaTeX manuscript in `paper/main.tex` (IEEEtran format) fully updated to incorporate dynamic `\input{tables/*.tex}` and ground all abstract and textual claims in `results/all_results_aggregated.json`.
+  - `FINAL_REPORT.md` completely rewritten with verified 3-seed numbers, honest baseline explanations, sensitivity analysis, and CPU latency measurements.
+  - `COLAB_INSTRUCTIONS.md` produced with cell-by-cell GPU execution instructions, timings, and artifact import steps.
+- **Next**: Phase 8 Final QA.
+- **Blockers**: None.
+
+## Phase 8: Final Quality Assurance & Release
+- **Status**: IN PROGRESS
+- **Done**: Full test suite passing (38/38 tests).
+- **Next**: Final git commit and tag.
 - **Blockers**: None.

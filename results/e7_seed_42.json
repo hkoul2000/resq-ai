@@ -1,0 +1,26 @@
+{
+  "ResQNet": {
+    "total_parameters": 48083777,
+    "trainable_parameters": 48083777,
+    "inference_latency_ms": 73.97232000002987,
+    "throughput_fps": 13.518570006740713
+  },
+  "UNet_SAR": {
+    "total_parameters": 92001,
+    "trainable_parameters": 92001,
+    "inference_latency_ms": 8.927859999857901,
+    "throughput_fps": 112.00891232691866
+  },
+  "UNet_Optical": {
+    "total_parameters": 95169,
+    "trainable_parameters": 95169,
+    "inference_latency_ms": 10.075589999905787,
+    "throughput_fps": 99.24976113156545
+  },
+  "EarlyFusion": {
+    "total_parameters": 95745,
+    "trainable_parameters": 95745,
+    "inference_latency_ms": 10.29209999996965,
+    "throughput_fps": 97.16189143528118
+  }
+}

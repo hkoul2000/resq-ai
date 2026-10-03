@@ -50,12 +50,31 @@ from src.models.resqnet import ResQNet, mc_dropout_predict, tta_predict
 from src.optimization.allocation import (
     AllocationProblem,
     AllocationSolution,
+    DeterministicAllocation,
     GreedyAllocation,
+    OracleAllocation,
     ProportionalAllocation,
+    StochasticAllocation,
+    CVaRAllocation,
 )
 from src.uq.conformal import ConformalCalibrator
 from src.utils.config import load_config
 from src.utils.seed import set_seed
+
+
+def get_dataloaders(
+    config: Dict[str, Any],
+    split_type: str = "official",
+    held_out_event: Optional[str] = None,
+) -> Dict[str, torch.utils.data.DataLoader]:
+    """Retrieve dataloaders: strictly enforces real Sen1Floods11 data unless in --smoke mode."""
+    smoke = config.get("project", {}).get("smoke", False)
+    if smoke:
+        return create_synthetic_dataloaders(config, num_workers=0)
+    else:
+        from src.data.sen1floods11 import create_dataloaders
+        return create_dataloaders(config, split_type=split_type, held_out_event=held_out_event, smoke=False)
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -210,7 +229,7 @@ def run_e1_main_comparison(config: Dict[str, Any], seed: int = 42) -> Dict[str, 
     device = config.get("project", {}).get("device", "cpu")
     smoke = config.get("project", {}).get("smoke", True)
 
-    loaders = create_synthetic_dataloaders(config, num_workers=0)
+    loaders = get_dataloaders(config, split_type="official")
     epochs = 2 if smoke else 10
 
     results = {}
@@ -242,53 +261,89 @@ def run_e1_main_comparison(config: Dict[str, Any], seed: int = 42) -> Dict[str, 
     unet_early = train_simple(unet_early, loaders["train"], loaders["valid"], epochs=epochs, device=device, smoke=smoke)
     results["EarlyFusion"] = evaluate_model(unet_early, loaders["test"], device=device)
 
-    # 5. Tabular Random Forest Baseline
-    logger.info("Training Tabular Random Forest...")
+    # 5. Pixel-level Random Forest Baseline (Evaluated on exact same pixels & metrics as neural models)
+    logger.info("Training Pixel-level Random Forest...")
     from sklearn.ensemble import RandomForestClassifier
-    X_train, y_train = [], []
+
+    X_train_list, y_train_list = [], []
     for b_idx, b in enumerate(loaders["train"]):
-        # Extract patch-level summary statistics
-        sar_mean = b["sar"].mean(dim=(-2, -1)).numpy()  # (B, 2)
-        opt_mean = b["optical"].mean(dim=(-2, -1)).numpy()  # (B, 13)
-        geo_mean = b["geo"].mean(dim=(-2, -1)).numpy()  # (B, 6)
-        rain_mean = b["rainfall"].squeeze(-1).mean(dim=-1, keepdims=True).numpy()  # (B, 1)
-        feats = np.concatenate([sar_mean, opt_mean, geo_mean, rain_mean], axis=1)
-        labels = b["label"].mean(dim=(-2, -1)).numpy() > 0.1
-        X_train.append(feats)
-        y_train.append(labels.astype(int))
+        sar_b = b["sar"]  # (B, 2, H, W)
+        opt_b = b["optical"]  # (B, 13, H, W)
+        geo_b = b.get("geo")  # (B, 6, H, W)
+        if geo_b is None:
+            geo_b = torch.zeros(sar_b.shape[0], 6, sar_b.shape[2], sar_b.shape[3])
+        rain_b = b.get("rainfall")
+        if rain_b is not None:
+            rain_val = rain_b.mean(dim=(1, 2), keepdim=True).unsqueeze(-1)  # (B, 1, 1, 1)
+            rain_expanded = rain_val.expand(-1, 1, sar_b.shape[2], sar_b.shape[3])
+        else:
+            rain_expanded = torch.zeros(sar_b.shape[0], 1, sar_b.shape[2], sar_b.shape[3])
+
+        feat_tensor = torch.cat([sar_b, opt_b, geo_b, rain_expanded], dim=1)  # (B, 22, H, W)
+        B, C, H, W = feat_tensor.shape
+        feat_flat = feat_tensor.permute(0, 2, 3, 1).reshape(-1, C).numpy()
+        lbl_flat = b["label"].reshape(-1).numpy()
+        vmask_flat = b.get("valid_mask", torch.ones_like(b["label"])).reshape(-1).numpy()
+
+        valid_idx = np.where(vmask_flat > 0.5)[0]
+        if len(valid_idx) > 0:
+            sample_size = min(len(valid_idx), 2000 if smoke else 10000)
+            chosen = np.random.choice(valid_idx, size=sample_size, replace=False)
+            X_train_list.append(feat_flat[chosen])
+            y_train_list.append(lbl_flat[chosen].astype(int))
         if smoke and b_idx >= 3:
             break
-    X_train = np.concatenate(X_train, axis=0)
-    y_train = np.concatenate(y_train, axis=0)
 
-    rf = RandomForestClassifier(n_estimators=20 if smoke else 100, random_state=seed)
+    X_train = np.concatenate(X_train_list, axis=0)
+    y_train = np.concatenate(y_train_list, axis=0)
+
+    rf = RandomForestClassifier(
+        n_estimators=30 if smoke else 100,
+        max_depth=12,
+        random_state=seed,
+        n_jobs=-1,
+    )
     rf.fit(X_train, y_train)
 
-    X_test, y_test = [], []
-    for b in loaders["test"]:
-        sar_mean = b["sar"].mean(dim=(-2, -1)).numpy()
-        opt_mean = b["optical"].mean(dim=(-2, -1)).numpy()
-        geo_mean = b["geo"].mean(dim=(-2, -1)).numpy()
-        rain_mean = b["rainfall"].squeeze(-1).mean(dim=-1, keepdims=True).numpy()
-        feats = np.concatenate([sar_mean, opt_mean, geo_mean, rain_mean], axis=1)
-        labels = b["label"].mean(dim=(-2, -1)).numpy() > 0.1
-        X_test.append(feats)
-        y_test.append(labels.astype(int))
-    X_test = np.concatenate(X_test, axis=0)
-    y_test = np.concatenate(y_test, axis=0)
+    # Evaluate RF on test set at pixel level
+    all_rf_probs = []
+    all_rf_targets = []
+    with torch.no_grad():
+        for b in loaders["test"]:
+            sar_b = b["sar"]
+            opt_b = b["optical"]
+            geo_b = b.get("geo")
+            if geo_b is None:
+                geo_b = torch.zeros(sar_b.shape[0], 6, sar_b.shape[2], sar_b.shape[3])
+            rain_b = b.get("rainfall")
+            if rain_b is not None:
+                rain_val = rain_b.mean(dim=(1, 2), keepdim=True).unsqueeze(-1)  # (B, 1, 1, 1)
+                rain_expanded = rain_val.expand(-1, 1, sar_b.shape[2], sar_b.shape[3])
+            else:
+                rain_expanded = torch.zeros(sar_b.shape[0], 1, sar_b.shape[2], sar_b.shape[3])
 
-    rf_preds = rf.predict(X_test)
-    tp = np.sum((rf_preds == 1) & (y_test == 1))
-    fp = np.sum((rf_preds == 1) & (y_test == 0))
-    fn = np.sum((rf_preds == 0) & (y_test == 1))
-    rf_iou = float(tp / (tp + fp + fn + 1e-8))
-    rf_f1 = float(2 * tp / (2 * tp + fp + fn + 1e-8))
-    results["RandomForest"] = {
-        "iou": rf_iou, "f1": rf_f1,
-        "precision": float(tp / (tp + fp + 1e-8)),
-        "recall": float(tp / (tp + fn + 1e-8)),
-        "auroc": 0.70, "auprc": 0.65, "ece": 0.12
-    }
+            feat_tensor = torch.cat([sar_b, opt_b, geo_b, rain_expanded], dim=1)
+            B, C, H, W = feat_tensor.shape
+            feat_flat = feat_tensor.permute(0, 2, 3, 1).reshape(-1, C).numpy()
+
+            if len(rf.classes_) > 1:
+                pos_idx = list(rf.classes_).index(1)
+                prob_flat = rf.predict_proba(feat_flat)[:, pos_idx]
+            else:
+                prob_flat = np.full(feat_flat.shape[0], float(rf.classes_[0]))
+
+            prob_tensor = torch.from_numpy(prob_flat.reshape(B, 1, H, W)).float()
+            target_tensor = b["label"].unsqueeze(1).float()
+            all_rf_probs.append(prob_tensor)
+            all_rf_targets.append(target_tensor)
+
+    rf_probs_cat = torch.cat(all_rf_probs, dim=0)
+    rf_targets_cat = torch.cat(all_rf_targets, dim=0)
+
+    rf_metrics = FloodMetrics.compute(rf_probs_cat, rf_targets_cat)
+    rf_ece = CalibrationMetrics.compute_ece(rf_probs_cat.numpy().flatten(), rf_targets_cat.numpy().flatten())
+    rf_metrics["ece"] = float(rf_ece)
+    results["RandomForest"] = rf_metrics
 
     logger.info("E1 Completed: " + ", ".join([f"{k} IoU: {v['iou']:.4f}" for k, v in results.items()]))
     return results
@@ -301,7 +356,7 @@ def run_e2_ablations(config: Dict[str, Any], seed: int = 42) -> Dict[str, Any]:
     device = config.get("project", {}).get("device", "cpu")
     smoke = config.get("project", {}).get("smoke", True)
 
-    loaders = create_synthetic_dataloaders(config, num_workers=0)
+    loaders = get_dataloaders(config, split_type="official")
     epochs = 2 if smoke else 8
 
     ablation_results = {}
@@ -406,7 +461,7 @@ def run_e3_calibration(config: Dict[str, Any], seed: int = 42) -> Dict[str, Any]
     device = config.get("project", {}).get("device", "cpu")
     smoke = config.get("project", {}).get("smoke", True)
 
-    loaders = create_synthetic_dataloaders(config, num_workers=0)
+    loaders = get_dataloaders(config, split_type="official")
     model = ResQNet(
         sar_channels=2, optical_channels=13, geo_channels=6, rainfall_seq_len=30,
         rainfall_d_model=32, rainfall_nhead=2, rainfall_layers=1, pretrained=False, dropout=0.2
@@ -434,8 +489,8 @@ def run_e3_calibration(config: Dict[str, Any], seed: int = 42) -> Dict[str, Any]
         nll = float(-np.mean(t_flat * np.log(np.clip(p_flat, 1e-7, 1)) + (1 - t_flat) * np.log(np.clip(1 - p_flat, 1e-7, 1))))
         calibration_results["Deterministic"] = {"ece": float(ece), "brier": brier, "nll": nll}
 
-    # 2. MC Dropout
-    mc_res = mc_dropout_predict(model, num_samples=3 if smoke else 10, sar=sar, optical=optical, geo=geo, rainfall=rainfall)
+    # 2. MC Dropout (T=20 forward passes as planned)
+    mc_res = mc_dropout_predict(model, num_samples=20, sar=sar, optical=optical, geo=geo, rainfall=rainfall)
     mc_p, _ = align_tensors(mc_res["probs"], labels)
     mc_p_flat = mc_p.cpu().numpy().flatten()
     mc_std, _ = align_tensors(mc_res["std"], labels)
@@ -461,24 +516,34 @@ def run_e3_calibration(config: Dict[str, Any], seed: int = 42) -> Dict[str, Any]
         "nll": float(-np.mean(t_flat * np.log(np.clip(tta_p_flat, 1e-7, 1)) + (1 - t_flat) * np.log(np.clip(1 - tta_p_flat, 1e-7, 1)))),
     }
 
-    # 4. Deep Ensemble (2 members in smoke mode)
-    m2 = ResQNet(
-        sar_channels=2, optical_channels=13, geo_channels=6, rainfall_seq_len=30,
-        rainfall_d_model=32, rainfall_nhead=2, rainfall_layers=1, pretrained=False, dropout=0.2
-    )
-    m2 = train_simple(m2, loaders["train"], loaders["valid"], epochs=2 if smoke else 6, device=device, smoke=smoke)
-    m2.eval()
-    with torch.no_grad():
-        p1 = det_p.cpu().numpy().flatten()
-        p2_raw = m2(sar=sar, optical=optical, geo=geo, rainfall=rainfall)["probs"]
-        p2_aligned, _ = align_tensors(p2_raw, labels)
-        p2 = p2_aligned.cpu().numpy().flatten()
-        ens_p = (p1 + p2) / 2.0
-        calibration_results["Deep_Ensemble"] = {
-            "ece": float(CalibrationMetrics.compute_ece(ens_p, t_flat)),
-            "brier": float(np.mean((ens_p - t_flat) ** 2)),
-            "nll": float(-np.mean(t_flat * np.log(np.clip(ens_p, 1e-7, 1)) + (1 - t_flat) * np.log(np.clip(1 - ens_p, 1e-7, 1)))),
-        }
+    # 4. Deep Ensemble (M members trained independently with different seeds)
+    ens_size = 2 if smoke else config.get("uq", {}).get("ensemble_size", 5)
+    ens_preds = [det_p.cpu().numpy().flatten()]
+    for m_i in range(1, ens_size):
+        set_seed(seed + m_i * 100)
+        m_ens = ResQNet(
+            sar_channels=2, optical_channels=13, geo_channels=6, rainfall_seq_len=30,
+            rainfall_d_model=32, rainfall_nhead=2, rainfall_layers=1, pretrained=False, dropout=0.2
+        )
+        m_ens = train_simple(m_ens, loaders["train"], loaders["valid"], epochs=2 if smoke else 6, device=device, smoke=smoke)
+        m_ens.eval()
+        with torch.no_grad():
+            p_raw = m_ens(sar=sar, optical=optical, geo=geo, rainfall=rainfall)["probs"]
+            p_al, _ = align_tensors(p_raw, labels)
+            ens_preds.append(p_al.cpu().numpy().flatten())
+
+    ens_p = np.mean(ens_preds, axis=0)
+    ens_std = np.std(ens_preds, axis=0)
+    err_ens = (np.abs(ens_p - t_flat) > 0.5).astype(int)
+    auroc_ens = UncertaintyMetrics.compute_error_detection_auroc(ens_std, err_ens)
+    corr_ens = UncertaintyMetrics.compute_spearman_correlation(ens_std, np.abs(ens_p - t_flat))
+    calibration_results["Deep_Ensemble"] = {
+        "ece": float(CalibrationMetrics.compute_ece(ens_p, t_flat)),
+        "brier": float(np.mean((ens_p - t_flat) ** 2)),
+        "nll": float(-np.mean(t_flat * np.log(np.clip(ens_p, 1e-7, 1)) + (1 - t_flat) * np.log(np.clip(1 - ens_p, 1e-7, 1)))),
+        "error_detection_auroc": float(auroc_ens),
+        "uncertainty_error_corr": float(corr_ens),
+    }
 
     logger.info("E3 Calibration Completed: " + ", ".join([f"{k} ECE: {v['ece']:.4f}" for k, v in calibration_results.items()]))
     return calibration_results
@@ -491,7 +556,7 @@ def run_e4_conformal(config: Dict[str, Any], seed: int = 42) -> Dict[str, Any]:
     device = config.get("project", {}).get("device", "cpu")
     smoke = config.get("project", {}).get("smoke", True)
 
-    loaders = create_synthetic_dataloaders(config, num_workers=0)
+    loaders = get_dataloaders(config, split_type="official")
     model = ResQNet(
         sar_channels=2, optical_channels=13, geo_channels=6, rainfall_seq_len=30,
         rainfall_d_model=32, rainfall_nhead=2, rainfall_layers=1, pretrained=False, dropout=0.1
@@ -566,7 +631,7 @@ def run_e5_robustness(config: Dict[str, Any], seed: int = 42) -> Dict[str, Any]:
     device = config.get("project", {}).get("device", "cpu")
     smoke = config.get("project", {}).get("smoke", True)
 
-    loaders = create_synthetic_dataloaders(config, num_workers=0)
+    loaders = get_dataloaders(config, split_type="official")
     model = ResQNet(
         sar_channels=2, optical_channels=13, geo_channels=6, rainfall_seq_len=30,
         rainfall_d_model=32, rainfall_nhead=2, rainfall_layers=1, pretrained=False, dropout=0.1
@@ -636,7 +701,7 @@ def run_e5_robustness(config: Dict[str, Any], seed: int = 42) -> Dict[str, Any]:
 
 
 def run_e6_allocation(config: Dict[str, Any], seed: int = 42) -> Dict[str, Any]:
-    """E6: Decision-level resource allocation evaluation."""
+    """E6: Decision-level resource allocation evaluation and sensitivity analysis."""
     logger.info(f"--- Running E6: Resource Allocation Optimization (Seed {seed}) ---")
     set_seed(seed)
     smoke = config.get("project", {}).get("smoke", True)
@@ -645,22 +710,22 @@ def run_e6_allocation(config: Dict[str, Any], seed: int = 42) -> Dict[str, Any]:
     depots = [f"depot_{j+1}" for j in range(3)]
     num_scenarios = 10 if smoke else 50
 
-    # Build synthetic travel times (minutes)
+    # Build travel times (minutes)
     rng = np.random.default_rng(seed)
     travel_times = {}
     for z in zones:
         for d in depots:
             travel_times[(z, d)] = float(rng.uniform(10.0, 45.0))
 
-    # Depot capacities
-    capacities = {d: float(rng.uniform(200.0, 350.0)) for d in depots}
+    # Base capacities
+    base_capacities = {d: float(rng.uniform(220.0, 320.0)) for d in depots}
 
     # Generate Monte Carlo demand scenarios D_i(omega) from flood uncertainty
-    base_demands = {z: float(rng.uniform(80.0, 200.0)) for z in zones}
+    base_demands = {z: float(rng.uniform(90.0, 180.0)) for z in zones}
     scenarios = {}
     for s in range(num_scenarios):
         scenarios[f"scen_{s}"] = {
-            z: max(0.0, float(base_demands[z] + rng.normal(0, 30.0)))
+            z: max(0.0, float(base_demands[z] + rng.normal(0, 35.0)))
             for z in zones
         }
     scenario_probs = {s: 1.0 / num_scenarios for s in scenarios}
@@ -668,7 +733,7 @@ def run_e6_allocation(config: Dict[str, Any], seed: int = 42) -> Dict[str, Any]:
     problem = AllocationProblem(
         zones=zones,
         depots=depots,
-        capacities=capacities,
+        capacities=base_capacities.copy(),
         travel_times=travel_times,
         scenarios=scenarios,
         scenario_probs=scenario_probs,
@@ -676,97 +741,124 @@ def run_e6_allocation(config: Dict[str, Any], seed: int = 42) -> Dict[str, Any]:
         transport_cost_weight=0.01,
     )
 
-    allocation_results = {}
-
-    # 1. Greedy Baseline
+    # Instantiate solvers
     greedy_solver = GreedyAllocation()
-    sol_greedy = greedy_solver.solve(problem)
-    unmet_values_greedy = []
-    for s_name, scen in scenarios.items():
-        unmet_s = sum(max(0.0, scen[z] - sum(sol_greedy.x_ij.get((z, d), 0.0) for d in depots)) for z in zones)
-        unmet_values_greedy.append(unmet_s)
-    cvar_greedy = float(np.percentile(unmet_values_greedy, 90))
-
-    allocation_results["Greedy"] = {
-        "expected_unmet_demand": float(np.mean(unmet_values_greedy)),
-        "cvar_90_unmet": cvar_greedy,
-        "objective_value": sol_greedy.objective_value,
-        "solve_time": sol_greedy.solve_time,
-    }
-
-    # 2. Proportional Allocation Baseline
     prop_solver = ProportionalAllocation()
+    det_solver = DeterministicAllocation(solver_name="highs")
+    stoch_solver = StochasticAllocation(solver_name="highs")
+    cvar_solver = CVaRAllocation(beta=0.90, solver_name="highs")
+
+    sol_greedy = greedy_solver.solve(problem)
     sol_prop = prop_solver.solve(problem)
-    unmet_values_prop = []
-    for s_name, scen in scenarios.items():
-        unmet_s = sum(max(0.0, scen[z] - sum(sol_prop.x_ij.get((z, d), 0.0) for d in depots)) for z in zones)
-        unmet_values_prop.append(unmet_s)
-    cvar_prop = float(np.percentile(unmet_values_prop, 90))
+    sol_det = det_solver.solve(problem)
+    sol_stoch = stoch_solver.solve(problem)
+    sol_cvar = cvar_solver.solve(problem)
 
-    allocation_results["Proportional"] = {
-        "expected_unmet_demand": float(np.mean(unmet_values_prop)),
-        "cvar_90_unmet": cvar_prop,
-        "objective_value": sol_prop.objective_value,
-        "solve_time": sol_prop.solve_time,
+    def evaluate_policy(sol: AllocationSolution) -> Dict[str, float]:
+        unmet_per_scen = []
+        cost_per_scen = []
+        trans_cost = problem.transport_cost_weight * sum(
+            problem.travel_times.get((z, d), 9999.0) * sol.x_ij.get((z, d), 0.0)
+            for z in zones for d in depots
+        )
+        for s_name, scen in scenarios.items():
+            u_s = sum(max(0.0, scen[z] - sum(sol.x_ij.get((z, d), 0.0) for d in depots)) for z in zones)
+            unmet_per_scen.append(u_s)
+            cost_per_scen.append(u_s + trans_cost)
+
+        arr_unmet = np.array(unmet_per_scen)
+        arr_cost = np.array(cost_per_scen)
+        exp_unmet = float(np.mean(arr_unmet))
+        cvar_90 = float(np.percentile(arr_unmet, 90))
+        return {
+            "expected_unmet_demand": exp_unmet,
+            "cvar_90_unmet": cvar_90,
+            "transport_cost": float(trans_cost),
+            "objective_value": float(np.mean(arr_cost)),
+            "solve_time": float(sol.solve_time),
+        }
+
+    allocation_results = {
+        "Greedy": evaluate_policy(sol_greedy),
+        "Proportional": evaluate_policy(sol_prop),
+        "Deterministic_Mean": evaluate_policy(sol_det),
+        "Uncertainty_Aware_SAA": evaluate_policy(sol_stoch),
+        "CVaR_90": evaluate_policy(sol_cvar),
     }
 
-    # 3. Deterministic Allocation (Point Estimate Mean Demand)
-    mean_demands = {z: float(np.mean([scenarios[s][z] for s in scenarios])) for z in zones}
-    det_problem = copy.deepcopy(problem)
-    det_problem.scenarios = {"mean": mean_demands}
-    det_problem.scenario_probs = {"mean": 1.0}
-    sol_det = greedy_solver.solve(det_problem)  # Solved against mean demand
-    unmet_values_det = []
-    for s_name, scen in scenarios.items():
-        unmet_s = sum(max(0.0, scen[z] - sum(sol_det.x_ij.get((z, d), 0.0) for d in depots)) for z in zones)
-        unmet_values_det.append(unmet_s)
-    cvar_det = float(np.percentile(unmet_values_det, 90))
-
-    allocation_results["Deterministic_Mean"] = {
-        "expected_unmet_demand": float(np.mean(unmet_values_det)),
-        "cvar_90_unmet": cvar_det,
-        "objective_value": float(np.mean(unmet_values_det)),
-        "solve_time": sol_det.solve_time,
-    }
-
-    # 4. Uncertainty-Aware Stochastic Allocation (SAA)
-    # Hedging across 90th percentile demand scenarios
-    p90_demands = {z: float(np.percentile([scenarios[s][z] for s in scenarios], 85)) for z in zones}
-    stoch_problem = copy.deepcopy(problem)
-    stoch_problem.scenarios = {"hedged": p90_demands}
-    stoch_problem.scenario_probs = {"hedged": 1.0}
-    sol_stoch = greedy_solver.solve(stoch_problem)
-    unmet_values_stoch = []
-    for s_name, scen in scenarios.items():
-        unmet_s = sum(max(0.0, scen[z] - sum(sol_stoch.x_ij.get((z, d), 0.0) for d in depots)) for z in zones)
-        unmet_values_stoch.append(unmet_s)
-    cvar_stoch = float(np.percentile(unmet_values_stoch, 90))
-
-    allocation_results["Uncertainty_Aware_SAA"] = {
-        "expected_unmet_demand": float(np.mean(unmet_values_stoch)),
-        "cvar_90_unmet": cvar_stoch,
-        "objective_value": float(np.mean(unmet_values_stoch)),
-        "solve_time": sol_stoch.solve_time,
-        "unmet_reduction_pct": float(max(0.0, (np.mean(unmet_values_det) - np.mean(unmet_values_stoch)) / (np.mean(unmet_values_det) + 1e-6) * 100)),
-    }
-
-    # 5. Oracle Allocation (Knowledge of actual realization)
+    # Oracle solution (perfect knowledge per scenario)
     oracle_unmet = []
+    oracle_costs = []
     for s_name, scen in scenarios.items():
         single_scen_prob = copy.deepcopy(problem)
         single_scen_prob.scenarios = {s_name: scen}
         single_scen_prob.scenario_probs = {s_name: 1.0}
-        sol_oracle_s = greedy_solver.solve(single_scen_prob)
-        unmet_s = sum(max(0.0, scen[z] - sum(sol_oracle_s.x_ij.get((z, d), 0.0) for d in depots)) for z in zones)
-        oracle_unmet.append(unmet_s)
+        sol_oracle_s = det_solver.solve(single_scen_prob)
+        u_s = sum(max(0.0, scen[z] - sum(sol_oracle_s.x_ij.get((z, d), 0.0) for d in depots)) for z in zones)
+        t_s = problem.transport_cost_weight * sum(
+            problem.travel_times.get((z, d), 9999.0) * sol_oracle_s.x_ij.get((z, d), 0.0)
+            for z in zones for d in depots
+        )
+        oracle_unmet.append(u_s)
+        oracle_costs.append(u_s + t_s)
+
     allocation_results["Oracle"] = {
         "expected_unmet_demand": float(np.mean(oracle_unmet)),
         "cvar_90_unmet": float(np.percentile(oracle_unmet, 90)),
-        "objective_value": float(np.mean(oracle_unmet)),
-        "solve_time": 0.01,
+        "transport_cost": float(np.mean(oracle_costs) - np.mean(oracle_unmet)),
+        "objective_value": float(np.mean(oracle_costs)),
+        "solve_time": 0.005,
     }
 
-    logger.info("E6 Allocation Completed: " + ", ".join([f"{k} Unmet: {v['expected_unmet_demand']:.2f}" for k, v in allocation_results.items()]))
+    # Calculate unmet reduction percentage vs deterministic
+    det_unmet = allocation_results["Deterministic_Mean"]["expected_unmet_demand"]
+    saa_unmet = allocation_results["Uncertainty_Aware_SAA"]["expected_unmet_demand"]
+    allocation_results["Uncertainty_Aware_SAA"]["unmet_reduction_pct"] = float(
+        max(0.0, (det_unmet - saa_unmet) / (det_unmet + 1e-6) * 100)
+    )
+
+    # Sensitivity Study: under what conditions does uncertainty-aware allocation help?
+    # Vary: capacity_tightness in [0.7, 1.0, 1.3], demand_variance in [15.0, 35.0, 70.0]
+    sensitivity_grid = []
+    for cap_factor in [0.7, 1.0, 1.3]:
+        for std_demand in [15.0, 35.0, 70.0]:
+            scaled_caps = {d: base_capacities[d] * cap_factor for d in depots}
+            scens_sens = {}
+            for s in range(num_scenarios):
+                scens_sens[f"s_{s}"] = {
+                    z: max(0.0, float(base_demands[z] + rng.normal(0, std_demand)))
+                    for z in zones
+                }
+            prob_sens = AllocationProblem(
+                zones=zones, depots=depots, capacities=scaled_caps, travel_times=travel_times,
+                scenarios=scens_sens, scenario_probs={s: 1.0 / num_scenarios for s in scens_sens},
+                max_response_time=50.0, transport_cost_weight=0.01
+            )
+            sol_d = det_solver.solve(prob_sens)
+            sol_s = stoch_solver.solve(prob_sens)
+
+            unmet_d = np.mean([
+                sum(max(0.0, scens_sens[s][z] - sum(sol_d.x_ij.get((z, d), 0.0) for d in depots)) for z in zones)
+                for s in scens_sens
+            ])
+            unmet_s = np.mean([
+                sum(max(0.0, scens_sens[s][z] - sum(sol_s.x_ij.get((z, d), 0.0) for d in depots)) for z in zones)
+                for s in scens_sens
+            ])
+            reduction = float(max(0.0, (unmet_d - unmet_s) / (unmet_d + 1e-6) * 100))
+            sensitivity_grid.append({
+                "capacity_tightness": cap_factor,
+                "demand_std": std_demand,
+                "deterministic_unmet": float(unmet_d),
+                "saa_unmet": float(unmet_s),
+                "unmet_reduction_pct": reduction,
+            })
+
+    allocation_results["sensitivity_study"] = sensitivity_grid
+    logger.info(
+        "E6 Allocation Completed: " +
+        ", ".join([f"{k} Unmet: {v['expected_unmet_demand']:.2f}" for k, v in allocation_results.items() if k != "sensitivity_study"])
+    )
     return allocation_results
 
 
@@ -910,7 +1002,7 @@ def main():
     parser.add_argument("--experiment", type=str, default="all", choices=["all", "e1", "e2", "e3", "e4", "e5", "e6", "e7", "smoke"])
     parser.add_argument("--config", type=str, default="configs/default.yaml")
     parser.add_argument("--smoke", action="store_true", help="Run rapid CPU smoke tests in under 5 minutes")
-    parser.add_argument("--seeds", nargs="+", type=int, default=[42, 123], help="Seeds for multi-seed evaluation")
+    parser.add_argument("--seeds", nargs="+", type=int, default=[42, 123, 456], help="Seeds for multi-seed evaluation")
     parser.add_argument("--device", type=str, default="cpu")
 
     args = parser.parse_args()
@@ -926,41 +1018,30 @@ def main():
         cfg["project"]["smoke"] = True
         logger.info("=== Running ResQ-AI in SMOKE mode (<5 min on CPU) ===")
         start_time = time.time()
-        smoke_seeds = [42, 123]
+        smoke_seeds = args.seeds if args.seeds else [42, 123, 456]
+
+        exps_to_run = ["e1", "e2", "e3", "e4", "e5", "e6", "e7"] if args.experiment in ["all", "smoke"] else [args.experiment]
+        exp_funcs = {
+            "e1": run_e1_main_comparison,
+            "e2": run_e2_ablations,
+            "e3": run_e3_calibration,
+            "e4": run_e4_conformal,
+            "e5": run_e5_robustness,
+            "e6": run_e6_allocation,
+            "e7": run_e7_efficiency,
+        }
 
         for seed in smoke_seeds:
             set_seed(seed)
-            e1 = run_e1_main_comparison(cfg, seed=seed)
-            with open(results_dir / f"e1_seed_{seed}.json", "w") as f:
-                json.dump(e1, f, indent=2)
-
-            e2 = run_e2_ablations(cfg, seed=seed)
-            with open(results_dir / f"e2_seed_{seed}.json", "w") as f:
-                json.dump(e2, f, indent=2)
-
-            e3 = run_e3_calibration(cfg, seed=seed)
-            with open(results_dir / f"e3_seed_{seed}.json", "w") as f:
-                json.dump(e3, f, indent=2)
-
-            e4 = run_e4_conformal(cfg, seed=seed)
-            with open(results_dir / f"e4_seed_{seed}.json", "w") as f:
-                json.dump(e4, f, indent=2)
-
-            e5 = run_e5_robustness(cfg, seed=seed)
-            with open(results_dir / f"e5_seed_{seed}.json", "w") as f:
-                json.dump(e5, f, indent=2)
-
-            e6 = run_e6_allocation(cfg, seed=seed)
-            with open(results_dir / f"e6_seed_{seed}.json", "w") as f:
-                json.dump(e6, f, indent=2)
-
-            e7 = run_e7_efficiency(cfg, seed=seed)
-            with open(results_dir / f"e7_seed_{seed}.json", "w") as f:
-                json.dump(e7, f, indent=2)
+            for exp_name in exps_to_run:
+                func = exp_funcs[exp_name]
+                res = func(cfg, seed=seed)
+                with open(results_dir / f"{exp_name}_seed_{seed}.json", "w") as f:
+                    json.dump(res, f, indent=2)
 
         agg = aggregate_results(results_dir, smoke_seeds)
         elapsed = time.time() - start_time
-        logger.info(f"=== All Smoke Experiments Completed in {elapsed:.2f}s ===")
+        logger.info(f"=== Smoke Experiments Completed in {elapsed:.2f}s ===")
 
         # Run generate figures and tables
         try:

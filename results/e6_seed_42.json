@@ -1,0 +1,110 @@
+{
+  "Greedy": {
+    "expected_unmet_demand": 71.48057045908844,
+    "cvar_90_unmet": 91.31978224172325,
+    "transport_cost": 167.70786628834583,
+    "objective_value": 239.1884367474343,
+    "solve_time": 0.00021028518676757812
+  },
+  "Proportional": {
+    "expected_unmet_demand": 67.54489483573181,
+    "cvar_90_unmet": 85.12338800264968,
+    "transport_cost": 233.00328282520732,
+    "objective_value": 300.54817766093913,
+    "solve_time": 0.00013589859008789062
+  },
+  "Deterministic_Mean": {
+    "expected_unmet_demand": 71.75781891084543,
+    "cvar_90_unmet": 91.32361628721502,
+    "transport_cost": 162.33694491916586,
+    "objective_value": 234.0947638300113,
+    "solve_time": 0.06219148635864258
+  },
+  "Uncertainty_Aware_SAA": {
+    "expected_unmet_demand": 66.92779563009857,
+    "cvar_90_unmet": 86.79803307061275,
+    "transport_cost": 163.49967847989987,
+    "objective_value": 230.4274741099984,
+    "solve_time": 0.005610466003417969,
+    "unmet_reduction_pct": 6.731006163158046
+  },
+  "CVaR_90": {
+    "expected_unmet_demand": 70.36827238627293,
+    "cvar_90_unmet": 96.5996022953889,
+    "transport_cost": 162.23309122298545,
+    "objective_value": 232.60136360925839,
+    "solve_time": 0.005762815475463867
+  },
+  "Oracle": {
+    "expected_unmet_demand": 38.30348785686409,
+    "cvar_90_unmet": 83.87412474308523,
+    "transport_cost": 158.90061915779262,
+    "objective_value": 197.2041070146567,
+    "solve_time": 0.005
+  },
+  "sensitivity_study": [
+    {
+      "capacity_tightness": 0.7,
+      "demand_std": 15.0,
+      "deterministic_unmet": 248.732079059507,
+      "saa_unmet": 235.50639079421043,
+      "unmet_reduction_pct": 5.317242658097188
+    },
+    {
+      "capacity_tightness": 0.7,
+      "demand_std": 35.0,
+      "deterministic_unmet": 282.2890635545135,
+      "saa_unmet": 243.288494777212,
+      "unmet_reduction_pct": 13.81582699239489
+    },
+    {
+      "capacity_tightness": 0.7,
+      "demand_std": 70.0,
+      "deterministic_unmet": 317.146360474123,
+      "saa_unmet": 294.2635287461332,
+      "unmet_reduction_pct": 7.215227575567471
+    },
+    {
+      "capacity_tightness": 1.0,
+      "demand_std": 15.0,
+      "deterministic_unmet": 40.96213577174822,
+      "saa_unmet": 38.31850109045926,
+      "unmet_reduction_pct": 6.453849553845278
+    },
+    {
+      "capacity_tightness": 1.0,
+      "demand_std": 35.0,
+      "deterministic_unmet": 104.99698285949106,
+      "saa_unmet": 98.00305688115795,
+      "unmet_reduction_pct": 6.661073224439012
+    },
+    {
+      "capacity_tightness": 1.0,
+      "demand_std": 70.0,
+      "deterministic_unmet": 162.6936617538019,
+      "saa_unmet": 162.43950323933416,
+      "unmet_reduction_pct": 0.1562190623566914
+    },
+    {
+      "capacity_tightness": 1.3,
+      "demand_std": 15.0,
+      "deterministic_unmet": 30.528621768504074,
+      "saa_unmet": 9.197207013841355,
+      "unmet_reduction_pct": 69.87349189125564
+    },
+    {
+      "capacity_tightness": 1.3,
+      "demand_std": 35.0,
+      "deterministic_unmet": 69.74268377750626,
+      "saa_unmet": 25.079470568851164,
+      "unmet_reduction_pct": 64.03999695615401
+    },
+    {
+      "capacity_tightness": 1.3,
+      "demand_std": 70.0,
+      "deterministic_unmet": 142.46827576818902,
+      "saa_unmet": 63.69516927774744,
+      "unmet_reduction_pct": 55.29168196412859
+    }
+  ]
+}

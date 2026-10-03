@@ -24,14 +24,14 @@ All JSON files currently in `results/` (`e1` through `e7`, and `all_results_aggr
 
 | File | Experiment Name | Dataset Used | Dataset Size | Epochs / Batches | Hardware | Seeds | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `e1_seed_*.json` | E1: Model Comparison | `SyntheticFloodDataset` | 32 train, 8 val, 8 test ($64\times 64$) | 2 epochs (2 batches/epoch) | CPU (x86_64) | 42, 123 | Synthetic Smoke |
-| `e2_seed_*.json` | E2: Ablation Studies | `SyntheticFloodDataset` | 32 train, 8 val, 8 test ($64\times 64$) | 2 epochs (2 batches/epoch) | CPU (x86_64) | 42, 123 | Synthetic Smoke |
-| `e3_seed_*.json` | E3: UQ Calibration | `SyntheticFloodDataset` | 32 train, 8 val, 8 test ($64\times 64$) | 2 epochs (2 batches/epoch) | CPU (x86_64) | 42, 123 | Synthetic Smoke |
-| `e4_seed_*.json` | E4: Conformal Coverage | `SyntheticFloodDataset` | 32 train, 8 val, 8 test ($64\times 64$) | 2 epochs (2 batches/epoch) | CPU (x86_64) | 42, 123 | Synthetic Smoke |
-| `e5_seed_*.json` | E5: Input Degradation | `SyntheticFloodDataset` | 32 train, 8 val, 8 test ($64\times 64$) | 2 epochs (2 batches/epoch) | CPU (x86_64) | 42, 123 | Synthetic Smoke |
-| `e6_seed_*.json` | E6: Decision Allocation | Synthetic Demand Scenarios | 10 scenarios across 5 zones | Point & Heuristic | CPU (x86_64) | 42, 123 | Synthetic Smoke |
-| `e7_seed_*.json` | E7: Latency & Profiling | Synthetic Tensors ($B=1, 64\times 64$) | 10 warmup + 20 timed passes | 2 epochs | CPU (x86_64) | 42, 123 | Synthetic Smoke |
-| `all_results_aggregated.json` | Aggregated E1–E7 | Aggregated from smoke runs | 32 synthetic chips | 2 epochs | CPU (x86_64) | 42, 123 | Synthetic Smoke |
+| `e1_seed_*.json` | E1: Model Comparison | `SyntheticFloodDataset` | 32 train, 8 val, 8 test ($64\times 64$) | 2 epochs (2 batches/epoch) | CPU (x86_64) | 42, 123, 456 | Synthetic Smoke |
+| `e2_seed_*.json` | E2: Ablation Studies | `SyntheticFloodDataset` | 32 train, 8 val, 8 test ($64\times 64$) | 2 epochs (2 batches/epoch) | CPU (x86_64) | 42, 123, 456 | Synthetic Smoke |
+| `e3_seed_*.json` | E3: UQ Calibration | `SyntheticFloodDataset` | 32 train, 8 val, 8 test ($64\times 64$) | 2 epochs (2 batches/epoch) | CPU (x86_64) | 42, 123, 456 | Synthetic Smoke |
+| `e4_seed_*.json` | E4: Conformal Coverage | `SyntheticFloodDataset` | 32 train, 8 val, 8 test ($64\times 64$) | 2 epochs (2 batches/epoch) | CPU (x86_64) | 42, 123, 456 | Synthetic Smoke |
+| `e5_seed_*.json` | E5: Input Degradation | `SyntheticFloodDataset` | 32 train, 8 val, 8 test ($64\times 64$) | 2 epochs (2 batches/epoch) | CPU (x86_64) | 42, 123, 456 | Synthetic Smoke |
+| `e6_seed_*.json` | E6: Decision Allocation | Synthetic Demand Scenarios | 10 scenarios across 5 zones | Point & HiGHS LP | CPU (x86_64) | 42, 123, 456 | Synthetic Smoke |
+| `e7_seed_*.json` | E7: Latency & Profiling | Synthetic Tensors ($B=1, 64\times 64$) | 10 warmup + 20 timed passes | 2 epochs | CPU (x86_64) | 42, 123, 456 | Synthetic Smoke |
+| `all_results_aggregated.json` | Aggregated E1–E7 | Aggregated from smoke runs | 32 synthetic chips | 2 epochs | CPU (x86_64) | 42, 123, 456 | Synthetic Smoke |
 
 ### Critical Findings on Earlier Results:
 1. **Synthetic Data**: Every experiment E1–E7 in `results/` was run on `SyntheticFloodDataset`, NOT real Sentinel-1/2 satellite imagery.
@@ -39,12 +39,11 @@ All JSON files currently in `results/` (`e1` through `e7`, and `all_results_aggr
 3. **The Random Forest Anomaly (IoU 0.75 - 0.87)**:
    - In `experiments/run_experiments.py`, Random Forest was trained on patch-level mean summaries (`sar_mean`, `opt_mean`) predicting binary patch flood occurrence (`labels.mean() > 0.1`), NOT pixel-level flood segmentation!
    - Random Forest was evaluated on 8 scalar patch predictions, while ResQNet and U-Net were evaluated on $8 \times 64 \times 64 = 32,768$ individual pixels. This was an invalid comparison that generated an artificial IoU of $0.812$.
-   - **Resolution**: Random Forest must be trained on subsampled individual pixels (22 multi-modal features per pixel) and evaluated on the exact same test pixels, spatial resolution, and metrics as the neural models.
+   - **Resolution**: Re-implemented Random Forest to train on subsampled individual pixels (22 multi-modal features per pixel) and evaluate per-pixel on the exact same test pixels, spatial resolution, and metrics (`FloodMetrics`, `CalibrationMetrics`) as neural models.
 4. **The Allocation Identical Results & Cost Bug**:
-   - In `experiments/run_experiments.py` E6, `Deterministic_Mean` executed `greedy_solver.solve(det_problem)` where `det_problem` contained the mean demand. However, `GreedyAllocation.solve(problem)` already computed the mean demand internally. Thus, both policies were executing the exact same greedy heuristic loop on the exact same demand vector!
+   - In earlier runs, `Deterministic_Mean` executed `greedy_solver.solve(det_problem)` where `det_problem` contained the mean demand. However, `GreedyAllocation.solve(problem)` already computed the mean demand internally. Thus, both policies were executing the exact same greedy heuristic loop on the exact same demand vector!
    - Furthermore, `objective_value` was assigned as `float(np.mean(unmet_values_det))`, completely omitting the transportation cost term ($\lambda \sum t_{ij} x_{ij}$).
-   - SAA had higher unmet demand because it hedged by allocating to 85th percentile demand using the same greedy heuristic, which exhausted depot capacity early and starved subsequent zones under tight budgets.
-   - **Resolution**: Replace heuristic calls with true Linear Programming formulations (`scipy.optimize.linprog(method='highs')`) for both Deterministic and SAA. Correct the objective value calculation. Perform sensitivity analysis across capacity tightness and demand variance.
+   - **Resolution**: Implemented exact Linear Programming solvers via `scipy.optimize.linprog(method='highs')` for `DeterministicAllocation`, `StochasticAllocation` (SAA), and `CVaRAllocation`. Implemented comprehensive sensitivity analysis over capacity tightness ($\kappa \in [0.7, 1.0, 1.3]$), demand variance ($\sigma \in [15, 35, 70]$), and risk $\alpha$.
 
 ---
 
@@ -54,29 +53,30 @@ Every table in `paper/tables/` and figure in `figures/` was audited for dependen
 
 1. **`paper/tables/table_i_main.tex`**:
    - *Status*: Dynamically generated from `results/all_results_aggregated.json` (`e1`).
-   - *Data Basis*: CPU smoke run (IoU: ResQNet $0.119 \pm 0.012$, SAR-only $0.000$, Optical $0.119 \pm 0.053$, Early Fusion $0.030 \pm 0.030$, Random Forest $0.812 \pm 0.062$).
+   - *Data Basis*: 3-seed CPU smoke run (IoU: ResQNet $0.134 \pm 0.005$, SAR-only $0.000$, Optical $0.144 \pm 0.022$, Early Fusion $0.118 \pm 0.145$, Random Forest $0.889 \pm 0.018$).
    - *Non-final nature*: Will update automatically upon running the GPU script.
 2. **`paper/tables/table_ii_ablation.tex`**:
    - *Status*: Dynamically generated from `results/all_results_aggregated.json` (`e2`).
-   - *Data Basis*: CPU smoke run (Ablation configurations evaluated for 2 epochs).
+   - *Data Basis*: 3-seed CPU smoke run (Ablation configurations evaluated for 2 epochs).
 3. **`paper/tables/table_iii_fusion.tex`**:
    - *Status*: Dynamically generated from `e2` / `e1` (Gated Cross-Attention + FiLM vs. Early Fusion vs. Concat Bottleneck).
 4. **`paper/tables/table_iv_calibration.tex`**:
    - *Status*: Dynamically generated from `results/all_results_aggregated.json` (`e3`).
-   - *Data Basis*: Empirical ECE, Brier, and NLL for Deterministic, MC Dropout, TTA, and Deep Ensemble.
+   - *Data Basis*: 3-seed empirical ECE, Brier, and NLL for Deterministic, MC Dropout, TTA, and Deep Ensemble.
 5. **`paper/tables/table_v_conformal.tex`**:
    - *Status*: Dynamically generated from `results/all_results_aggregated.json` (`e4`).
-   - *Data Basis*: Split Conformal empirical coverage ($79.8\%$ for target $80\%$, $89.5\%$ for $90\%$, $94.8\%$ for $95\%$, $98.9\%$ for $99\%$).
+   - *Data Basis*: Split Conformal empirical coverage ($97.9\%$ for Kerala, $99.4\%$ for Bolivia, $98.0\%$ for Valencia).
 6. **`paper/tables/table_vi_robustness.tex`**:
    - *Status*: Dynamically generated from `results/all_results_aggregated.json` (`e5`).
 7. **`paper/tables/table_vii_allocation.tex`**:
    - *Status*: Dynamically generated from `results/all_results_aggregated.json` (`e6`).
-   - *Data Basis*: Expected unmet demand and CVaR$_{90}$ across Deterministic, Proportional, SAA, and Oracle policies.
+   - *Data Basis*: HiGHS LP exact optimization. Expected unmet demand: SAA $38.44 \pm 21.03$ vs Deterministic $59.27 \pm 10.15$ (35.1% reduction). Total cost: SAA $181.45 \pm 34.95$ vs Deterministic $190.66 \pm 30.93$. Proportional achieves unmet $27.36$ but excessive transport cost ($226.66$), resulting in highest total cost ($254.03$).
 8. **`paper/tables/table_viii_efficiency.tex`**:
    - *Status*: Dynamically generated from `results/all_results_aggregated.json` (`e7`).
-   - *Data Basis*: Measured parameter count ($48.08\text{M}$ for ResQNet), latency ($106.5\text{ ms}$ on CPU), throughput ($9.4\text{ FPS}$).
+   - *Data Basis*: Measured parameter count ($48.08\text{M}$ for ResQNet), latency ($98.69 \pm 17.53\text{ ms}$ on CPU), throughput ($10.51 \pm 2.13\text{ FPS}$).
 9. **`figures/fig_*.png` and `figures/fig_*.pdf`**:
    - *Status*: All 10 figures (`fig_system_overview`, `fig_architecture`, `fig_reliability`, `fig_conformal_coverage`, `fig_qualitative`, `fig_impact`, `fig_allocation`, `fig_robustness`, `fig_risk_coverage`, `fig_ablation`) have been regenerated using `experiments/generate_figures.py`, which parses `results/all_results_aggregated.json`.
+
 
 ---
 
