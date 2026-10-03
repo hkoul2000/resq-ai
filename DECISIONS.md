@@ -65,3 +65,8 @@
 **Reasoning**: Upholds the core principle of scientific integrity ("never fabricate results or claim GPU execution when local hardware is CPU-only"), while providing seamless reproducibility for GPU environments.
 **Date**: 2026-10-03
 
+## D014: Explicit Labeling of Synthetic Smoke Artifacts & Turnkey Colab Execution
+**Decision**: Explicitly append `(Synthetic Smoke Benchmark)` to all table captions in `paper/tables/*.tex` and all figure titles in `figures/*.png`. Embed automated Google Cloud Storage `gsutil` downloads for real Sen1Floods11 imagery directly into `notebooks/colab_full_experiments.ipynb`.
+**Reasoning**: Adheres strictly to the rule that synthetic/smoke results must be explicitly labeled and never presented as final, and guarantees that the GPU Colab notebook executes out-of-the-box with real satellite data.
+**Date**: 2026-10-03
+

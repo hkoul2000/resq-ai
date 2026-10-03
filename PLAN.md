@@ -4,6 +4,7 @@
 **ResQ-AI**: Uncertainty-Aware Multimodal AI Framework for Urban Disaster Prediction, Impact Assessment and Emergency Resource Allocation.
 
 Primary hazard: Urban Flooding | Region focus: Indian flood events + cross-country generalization
+**Project Deadline**: 10 October 2026
 
 ## Hardware Context
 - Development machine: Windows, no GPU (CPU-only)

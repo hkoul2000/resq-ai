@@ -138,6 +138,7 @@ def generate_reliability(data: Dict[str, Any]):
         ax.legend(fontsize=8, loc='upper left')
         ax.grid(True, linestyle=':', alpha=0.6)
         
+    plt.suptitle('Reliability Diagrams (Synthetic Smoke Benchmark)', fontsize=11, weight='bold')
     plt.tight_layout()
     save_fig(fig, 'fig_reliability')
 
@@ -165,6 +166,7 @@ def generate_conformal_coverage(data: Dict[str, Any]):
     ax.set_xticks(x)
     ax.set_xticklabels([f'$\\alpha={a}$' for a in alphas], fontsize=9)
     ax.set_ylabel('Coverage Rate (%)', fontsize=10)
+    ax.set_title('Split Conformal Coverage (Synthetic Smoke Benchmark)', fontsize=10, weight='bold')
     ax.set_ylim(70, 105)
     ax.legend(fontsize=9, loc='lower right')
     ax.grid(True, axis='y', linestyle=':', alpha=0.6)
@@ -201,8 +203,9 @@ def generate_qualitative():
             if i == 0:
                 axes[0, j].set_title(col_titles[j], fontsize=9, weight='bold')
                 
-    axes[0, 0].set_ylabel('Kerala Event', fontsize=9, weight='bold')
-    axes[1, 0].set_ylabel('Valencia Event', fontsize=9, weight='bold')
+    axes[0, 0].set_ylabel('Event Alpha', fontsize=9, weight='bold')
+    axes[1, 0].set_ylabel('Event Beta', fontsize=9, weight='bold')
+    plt.suptitle('Qualitative Flood Maps (Synthetic Smoke Benchmark)', fontsize=11, weight='bold')
     plt.tight_layout()
     save_fig(fig, 'fig_qualitative')
 
@@ -222,6 +225,7 @@ def generate_impact():
         patch.set_edgecolor('black')
         
     ax.set_ylabel('Estimated Impacted Population', fontsize=9)
+    ax.set_title('Impact Distribution (Synthetic Smoke Benchmark)', fontsize=10, weight='bold')
     ax.grid(True, linestyle=':', alpha=0.6)
     save_fig(fig, 'fig_impact')
 
@@ -251,6 +255,7 @@ def generate_allocation(data: Dict[str, Any]):
     ax.set_xticks(x)
     ax.set_xticklabels(labels, fontsize=8)
     ax.set_ylabel('Unmet Emergency Demand (Units)', fontsize=9)
+    ax.set_title('Resource Allocation (Synthetic Smoke Benchmark)', fontsize=10, weight='bold')
     ax.legend(fontsize=8)
     ax.grid(True, axis='y', linestyle=':', alpha=0.6)
     save_fig(fig, 'fig_allocation')
@@ -271,6 +276,7 @@ def generate_robustness(data: Dict[str, Any]):
     fig, ax = plt.subplots(figsize=(5, 3.5))
     bars = ax.bar(labels, vals, color='seagreen', edgecolor='black', width=0.5)
     ax.set_ylabel('Segmentation IoU', fontsize=9)
+    ax.set_title('Robustness (Synthetic Smoke Benchmark)', fontsize=10, weight='bold')
     ax.set_ylim(0, max(vals) * 1.3 if vals else 0.2)
     plt.xticks(rotation=20, ha='right', fontsize=8)
     ax.grid(True, axis='y', linestyle=':', alpha=0.6)
@@ -296,6 +302,7 @@ def generate_risk_coverage():
     
     ax.set_xlabel('Coverage Fraction', fontsize=9)
     ax.set_ylabel('Empirical Risk (Selective Error)', fontsize=9)
+    ax.set_title('Risk-Coverage Curves (Synthetic Smoke Benchmark)', fontsize=10, weight='bold')
     ax.legend(fontsize=8)
     ax.grid(True, linestyle=':', alpha=0.6)
     save_fig(fig, 'fig_risk_coverage')
@@ -314,6 +321,7 @@ def generate_ablation(data: Dict[str, Any]):
     fig, ax = plt.subplots(figsize=(6, 3.5))
     bars = ax.bar(labels, vals, color='slateblue', edgecolor='black', width=0.55)
     ax.set_ylabel('Test IoU', fontsize=9)
+    ax.set_title('Ablation Study (Synthetic Smoke Benchmark)', fontsize=10, weight='bold')
     ax.set_ylim(0, max(vals) * 1.35 if vals else 0.2)
     plt.xticks(rotation=25, ha='right', fontsize=8)
     ax.grid(True, axis='y', linestyle=':', alpha=0.6)

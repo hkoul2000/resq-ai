@@ -76,7 +76,7 @@ def generate_table_i(data: Dict[str, Any]):
     body = "\n".join(rows)
     content = f"""\\begin{{table}}[h]
 \\centering
-\\caption{{Main Model Comparison: Flood Segmentation Performance (Mean $\\pm$ Std across seeds)}}
+\\caption{{Main Model Comparison: Flood Segmentation Performance (Synthetic Smoke Benchmark, Mean $\\pm$ Std across seeds)}}
 \\label{{tab:main_results}}
 \\resizebox{{\\columnwidth}}{{!}}{{
 \\begin{{tabular}}{{lcccccc}}
@@ -121,7 +121,7 @@ def generate_table_ii(data: Dict[str, Any]):
     body = "\n".join(rows)
     content = f"""\\begin{{table}}[h]
 \\centering
-\\caption{{Modality and Architectural Component Ablation Study}}
+\\caption{{Modality and Architectural Component Ablation Study (Synthetic Smoke Benchmark)}}
 \\label{{tab:ablation}}
 \\begin{{tabular}}{{lcccc}}
 \\toprule
@@ -149,7 +149,7 @@ def generate_table_iii(data: Dict[str, Any]):
     
     content = f"""\\begin{{table}}[h]
 \\centering
-\\caption{{Comparison of Fusion Architectures for Remote Sensing and Climate Data}}
+\\caption{{Comparison of Fusion Architectures (Synthetic Smoke Benchmark)}}
 \\label{{tab:fusion}}
 \\begin{{tabular}}{{lcc}}
 \\toprule
@@ -185,7 +185,7 @@ def generate_table_iv(data: Dict[str, Any]):
     body = "\n".join(rows)
     content = f"""\\begin{{table}}[h]
 \\centering
-\\caption{{Calibration and Uncertainty Quantification Metrics across UQ Frameworks}}
+\\caption{{Calibration and Uncertainty Quantification Metrics (Synthetic Smoke Benchmark)}}
 \\label{{tab:uq_calibration}}
 \\begin{{tabular}}{{lccc}}
 \\toprule
@@ -220,7 +220,7 @@ def generate_table_v(data: Dict[str, Any]):
     body = "\n".join(rows)
     content = f"""\\begin{{table}}[h]
 \\centering
-\\caption{{Split Conformal Prediction: Target vs. Empirical Coverage and Prediction Set Sizes}}
+\\caption{{Split Conformal Prediction: Empirical Coverage and Set Sizes (Synthetic Smoke Benchmark)}}
 \\label{{tab:conformal}}
 \\begin{{tabular}}{{lcccc}}
 \\toprule
@@ -252,7 +252,7 @@ def generate_table_vi(data: Dict[str, Any]):
     body = "\n".join(rows)
     content = f"""\\begin{{table}}[h]
 \\centering
-\\caption{{Model Robustness under Modality Failure and Sensor Degradation}}
+\\caption{{Model Robustness under Modality Failure and Sensor Degradation (Synthetic Smoke Benchmark)}}
 \\label{{tab:robustness}}
 \\begin{{tabular}}{{lc}}
 \\toprule
@@ -289,7 +289,7 @@ def generate_table_vii(data: Dict[str, Any]):
     body = "\n".join(rows)
     content = f"""\\begin{{table}}[h]
 \\centering
-\\caption{{Emergency Resource Allocation Policy Comparison under Disaster Uncertainty}}
+\\caption{{Emergency Resource Allocation Policy Comparison under Disaster Uncertainty (Synthetic Smoke Benchmark)}}
 \\label{{tab:allocation}}
 \\begin{{tabular}}{{lcccc}}
 \\toprule
@@ -327,7 +327,7 @@ def generate_table_viii(data: Dict[str, Any]):
     body = "\n".join(rows)
     content = f"""\\begin{{table}}[h]
 \\centering
-\\caption{{Computational Efficiency, Model Complexity, and Inference Latency}}
+\\caption{{Computational Efficiency and Latency Benchmarks (CPU Smoke Benchmark)}}
 \\label{{tab:efficiency}}
 \\begin{{tabular}}{{lccc}}
 \\toprule
