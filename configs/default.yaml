@@ -4,7 +4,7 @@ project:
   seeds: [42, 123, 456, 789, 1024]
   device: auto  # auto-detect GPU/CPU
   smoke: false
-  num_workers: 4
+  num_workers: 2
 
 data:
   root: data/
@@ -12,7 +12,7 @@ data:
   chip_size: 512
   crop_size: 256
   batch_size: 16
-  val_batch_size: 32
+  val_batch_size: 16
   modalities: [sar, optical, dem, landcover, rainfall]
   modality_dropout: 0.2
   normalize: true
@@ -42,6 +42,7 @@ training:
   warmup_epochs: 5
   early_stopping_patience: 15
   loss: bce_dice
+  pos_weight: auto  # Dynamic pos_weight computed from training flood pixel fraction
   focal_gamma: 2.0
   dice_weight: 0.5
   gradient_clip: 1.0

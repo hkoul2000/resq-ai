@@ -10,45 +10,73 @@ from scipy import stats
 from sklearn.metrics import average_precision_score, roc_auc_score
 
 class FloodMetrics:
-    """Computes basic segmentation metrics."""
-    
+    """Computes basic segmentation metrics with valid_mask support."""
+
     @staticmethod
-    def compute_all(probs: torch.Tensor, labels: torch.Tensor, threshold: float = 0.5) -> Dict[str, float]:
-        preds = (probs > threshold).float()
-        
-        tp = (preds * labels).sum().item()
-        fp = (preds * (1 - labels)).sum().item()
-        fn = ((1 - preds) * labels).sum().item()
-        tn = ((1 - preds) * (1 - labels)).sum().item()
-        
+    def compute_all(
+        probs: torch.Tensor,
+        labels: torch.Tensor,
+        threshold: float = 0.5,
+        valid_mask: Optional[torch.Tensor] = None,
+    ) -> Dict[str, float]:
+        if valid_mask is not None:
+            vmask_flat = valid_mask.flatten() > 0.5
+            if vmask_flat.sum() == 0:
+                return {
+                    "iou": 0.0,
+                    "f1": 0.0,
+                    "precision": 0.0,
+                    "recall": 0.0,
+                    "auroc": 0.0,
+                    "auprc": 0.0,
+                }
+            probs_flat = probs.flatten()[vmask_flat]
+            labels_flat = labels.flatten()[vmask_flat]
+        else:
+            probs_flat = probs.flatten()
+            labels_flat = labels.flatten()
+
+        preds = (probs_flat > threshold).float()
+
+        tp = (preds * labels_flat).sum().item()
+        fp = (preds * (1.0 - labels_flat)).sum().item()
+        fn = ((1.0 - preds) * labels_flat).sum().item()
+        tn = ((1.0 - preds) * (1.0 - labels_flat)).sum().item()
+
         iou = tp / (tp + fp + fn + 1e-8)
-        f1 = 2 * tp / (2 * tp + fp + fn + 1e-8)
+        f1 = 2.0 * tp / (2.0 * tp + fp + fn + 1e-8)
         precision = tp / (tp + fp + 1e-8)
         recall = tp / (tp + fn + 1e-8)
-        
-        probs_flat = probs.flatten().cpu().numpy()
-        labels_flat = labels.flatten().cpu().numpy()
-        
+
+        probs_np = probs_flat.cpu().numpy()
+        labels_np = labels_flat.cpu().numpy()
+
         try:
-            auroc = roc_auc_score(labels_flat, probs_flat)
-            auprc = average_precision_score(labels_flat, probs_flat)
+            auroc = roc_auc_score(labels_np, probs_np)
+            auprc = average_precision_score(labels_np, probs_np)
         except ValueError:
             auroc = 0.0
             auprc = 0.0
-            
+
         return {
-            "iou": iou,
-            "f1": f1,
-            "precision": precision,
-            "recall": recall,
-            "auroc": auroc,
-            "auprc": auprc
+            "iou": float(iou),
+            "f1": float(f1),
+            "precision": float(precision),
+            "recall": float(recall),
+            "auroc": float(auroc),
+            "auprc": float(auprc),
         }
 
     @classmethod
-    def compute(cls, probs: torch.Tensor, labels: torch.Tensor, threshold: float = 0.5) -> Dict[str, float]:
-        """Alias for compute_all."""
-        return cls.compute_all(probs, labels, threshold)
+    def compute(
+        cls,
+        probs: torch.Tensor,
+        labels: torch.Tensor,
+        threshold: float = 0.5,
+        valid_mask: Optional[torch.Tensor] = None,
+    ) -> Dict[str, float]:
+        """Alias for compute_all with valid_mask support."""
+        return cls.compute_all(probs, labels, threshold=threshold, valid_mask=valid_mask)
 
 class CalibrationMetrics:
     @staticmethod
@@ -81,23 +109,36 @@ class UncertaintyMetrics:
         corr, _ = stats.spearmanr(uncertainties, errors)
         return corr
 
-def compute_all_metrics(probs: torch.Tensor, labels: torch.Tensor, uncertainties: Optional[torch.Tensor] = None) -> Dict[str, float]:
+def compute_all_metrics(
+    probs: torch.Tensor,
+    labels: torch.Tensor,
+    uncertainties: Optional[torch.Tensor] = None,
+    valid_mask: Optional[torch.Tensor] = None,
+) -> Dict[str, float]:
     metrics = {}
-    metrics.update(FloodMetrics.compute_all(probs, labels))
-    
-    probs_np = probs.flatten().cpu().numpy()
-    labels_np = labels.flatten().cpu().numpy()
-    
+    metrics.update(FloodMetrics.compute_all(probs, labels, valid_mask=valid_mask))
+
+    if valid_mask is not None:
+        vmask_np = valid_mask.flatten().cpu().numpy() > 0.5
+        probs_np = probs.flatten().cpu().numpy()[vmask_np]
+        labels_np = labels.flatten().cpu().numpy()[vmask_np]
+    else:
+        probs_np = probs.flatten().cpu().numpy()
+        labels_np = labels.flatten().cpu().numpy()
+
     metrics["ece"] = CalibrationMetrics.compute_ece(probs_np, labels_np)
-    
+
     if uncertainties is not None:
-        unc_np = uncertainties.flatten().cpu().numpy()
+        if valid_mask is not None:
+            unc_np = uncertainties.flatten().cpu().numpy()[vmask_np]
+        else:
+            unc_np = uncertainties.flatten().cpu().numpy()
         preds_np = (probs_np > 0.5).astype(float)
         errors = (preds_np != labels_np).astype(int)
-        
+
         metrics["error_detection_auroc"] = UncertaintyMetrics.compute_error_detection_auroc(unc_np, errors)
         metrics["uncertainty_error_corr"] = UncertaintyMetrics.compute_spearman_correlation(unc_np, errors)
-        
+
     return metrics
 
 def paired_significance_test(scores_a: np.ndarray, scores_b: np.ndarray, test: str = 'wilcoxon') -> Tuple[float, float]:

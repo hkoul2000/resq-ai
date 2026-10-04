@@ -8,6 +8,7 @@ venv/
 dist/
 build/
 .eggs/
+data/
 data/raw/
 data/processed/
 data/cache/

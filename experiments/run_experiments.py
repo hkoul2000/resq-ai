@@ -93,6 +93,95 @@ def align_tensors(logits: torch.Tensor, targets: torch.Tensor) -> Tuple[torch.Te
     return logits, targets
 
 
+def compute_dataset_pos_weight(train_loader: torch.utils.data.DataLoader, max_batches: int = 30) -> float:
+    """Compute pos_weight = neg_pixels / pos_pixels from training flood fraction."""
+    total_pos = 0.0
+    total_valid = 0.0
+    for b_idx, batch in enumerate(train_loader):
+        lbl = batch["label"]
+        vmask = batch.get("valid_mask", torch.ones_like(lbl))
+        pos_pixels = (lbl * vmask).sum().item()
+        valid_pixels = vmask.sum().item()
+        total_pos += pos_pixels
+        total_valid += valid_pixels
+        if b_idx >= max_batches:
+            break
+
+    if total_pos <= 0 or total_valid <= total_pos:
+        return 6.0
+    neg_pixels = total_valid - total_pos
+    pos_weight = neg_pixels / (total_pos + 1e-8)
+    return float(np.clip(pos_weight, 1.0, 25.0))
+
+
+def _run_forward(model: nn.Module, batch: Dict[str, Any], device: str) -> torch.Tensor:
+    sar = batch["sar"].to(device)
+    optical = batch["optical"].to(device)
+    geo = batch.get("geo")
+    if geo is not None:
+        geo = geo.to(device)
+    rainfall = batch.get("rainfall")
+    if rainfall is not None:
+        rainfall = rainfall.to(device)
+    modality_mask = batch.get("modality_mask")
+    if modality_mask is not None:
+        modality_mask = modality_mask.to(device)
+
+    if isinstance(model, ResQNet):
+        out = model(sar=sar, optical=optical, geo=geo, rainfall=rainfall, modality_mask=modality_mask)
+    elif hasattr(model, "sar_only") and model.sar_only:
+        out = model(sar)
+    elif hasattr(model, "optical_only") and model.optical_only:
+        out = model(optical)
+    else:
+        # Early fusion concat
+        x = torch.cat([sar, optical], dim=1)
+        out = model(x)
+
+    logits = out["logits"] if isinstance(out, dict) else out
+    return logits
+
+
+def _quick_val_iou(
+    model: nn.Module,
+    val_loader: torch.utils.data.DataLoader,
+    device: str,
+    smoke: bool = True,
+    threshold: float = 0.5,
+) -> float:
+    """Compute validation IoU on valid pixels for early stopping."""
+    model.eval()
+    inter_total, union_total = 0.0, 0.0
+    with torch.no_grad():
+        for b_idx, batch in enumerate(val_loader):
+            labels = batch["label"].to(device)
+            vmask = batch.get("valid_mask")
+            if vmask is not None:
+                vmask = vmask.to(device)
+            else:
+                vmask = torch.ones_like(labels)
+
+            logits = _run_forward(model, batch, device)
+            logits, targets = align_tensors(logits, labels)
+            if vmask.dim() == 3 and targets.dim() == 4:
+                vmask = vmask.unsqueeze(1)
+            if vmask.shape[-2:] != targets.shape[-2:]:
+                vmask = F.interpolate(vmask, size=targets.shape[-2:], mode="nearest")
+
+            probs = torch.sigmoid(logits)
+            preds = (probs > threshold).float() * vmask
+            targets_masked = targets * vmask
+
+            inter = (preds * targets_masked).sum().item()
+            union = (preds + targets_masked).clamp(0, 1).sum().item()
+            inter_total += inter
+            union_total += union
+            if smoke and b_idx >= 4:
+                break
+    model.train()
+    return float(inter_total / (union_total + 1e-8))
+
+
 def train_simple(
     model: nn.Module,
     train_loader: torch.utils.data.DataLoader,
@@ -101,49 +190,97 @@ def train_simple(
     lr: float = 1e-3,
     device: str = "cpu",
     smoke: bool = True,
+    use_amp: bool = True,
+    pos_weight: Any = "auto",
+    early_stop_patience: int = 5,
+    save_callback = None,
 ) -> nn.Module:
-    """Train model for a specified number of epochs."""
+    """Train model with AMP, class pos_weight, valid_mask, early stopping, and SAR NaN validation."""
     model = model.to(device)
     model.train()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-    criterion = BCEDiceLoss()
+
+    # Dynamic or configured positive class weight
+    if pos_weight == "auto" or pos_weight is None:
+        pos_wt_val = compute_dataset_pos_weight(train_loader)
+    else:
+        pos_wt_val = float(pos_weight)
+    logger.info(f"Training with class pos_weight: {pos_wt_val:.2f}")
+
+    pos_wt_tensor = torch.tensor([pos_wt_val], device=device)
+    criterion = BCEDiceLoss(pos_weight=pos_wt_tensor)
+
+    use_amp_actual = use_amp and device != "cpu" and torch.cuda.is_available()
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp_actual)
+
+    best_val_iou = -1.0
+    best_state = None
+    epochs_no_improve = 0
 
     for epoch in range(epochs):
         epoch_loss = 0.0
+        num_batches = 0
         for b_idx, batch in enumerate(train_loader):
+            # Check for NaNs/Infs in SAR tensor during the first epoch (and raise error if any)
+            if "sar" in batch:
+                sar_tensor = batch["sar"]
+                nan_count = torch.isnan(sar_tensor).sum().item()
+                inf_count = torch.isinf(sar_tensor).sum().item()
+                if epoch == 0 and b_idx < 5:
+                    logger.info(f"Epoch {epoch} Batch {b_idx} SAR check: NaN={nan_count}, Inf={inf_count}")
+                if nan_count > 0 or inf_count > 0:
+                    raise ValueError(
+                        f"Critical error: NaN ({nan_count}) or Inf ({inf_count}) detected in SAR tensor "
+                        f"at epoch {epoch}, batch {b_idx}!"
+                    )
+
             optimizer.zero_grad()
-            sar = batch["sar"].to(device)
-            optical = batch["optical"].to(device)
-            geo = batch.get("geo")
-            if geo is not None:
-                geo = geo.to(device)
-            rainfall = batch.get("rainfall")
-            if rainfall is not None:
-                rainfall = rainfall.to(device)
-            modality_mask = batch.get("modality_mask")
-            if modality_mask is not None:
-                modality_mask = modality_mask.to(device)
             labels = batch["label"].to(device)
+            vmask = batch.get("valid_mask")
+            if vmask is not None:
+                vmask = vmask.to(device)
 
-            if isinstance(model, ResQNet):
-                out = model(sar=sar, optical=optical, geo=geo, rainfall=rainfall, modality_mask=modality_mask)
-            elif hasattr(model, "sar_only") and model.sar_only:
-                out = model(sar)
-            elif hasattr(model, "optical_only") and model.optical_only:
-                out = model(optical)
-            else:
-                # Early fusion concat
-                x = torch.cat([sar, optical], dim=1)
-                out = model(x)
+            with torch.cuda.amp.autocast(enabled=use_amp_actual):
+                logits = _run_forward(model, batch, device)
+                logits, targets = align_tensors(logits, labels)
+                if vmask is not None:
+                    if vmask.dim() == 3 and targets.dim() == 4:
+                        vmask = vmask.unsqueeze(1)
+                    if vmask.shape[-2:] != targets.shape[-2:]:
+                        vmask = F.interpolate(vmask, size=targets.shape[-2:], mode="nearest")
 
-            logits = out["logits"] if isinstance(out, dict) else out
-            logits, targets = align_tensors(logits, labels)
-            loss = criterion(logits, targets)
-            loss.backward()
-            optimizer.step()
+                loss = criterion(logits, targets, valid_mask=vmask)
+
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+
             epoch_loss += loss.item()
+            num_batches += 1
             if smoke and b_idx >= 2:
                 break
+
+        # Validation check for early stopping
+        val_iou = _quick_val_iou(model, val_loader, device, smoke=smoke)
+        avg_loss = epoch_loss / max(1, num_batches)
+        logger.info(f"Epoch {epoch+1}/{epochs} - loss: {avg_loss:.4f}, val_iou: {val_iou:.4f}")
+
+        if val_iou > best_val_iou:
+            best_val_iou = val_iou
+            best_state = copy.deepcopy(model.state_dict())
+            epochs_no_improve = 0
+            if save_callback is not None:
+                save_callback(epoch, val_iou)
+        else:
+            epochs_no_improve += 1
+            if epochs_no_improve >= early_stop_patience and not smoke:
+                logger.info(f"Early stopping triggered at epoch {epoch+1} (best val IoU: {best_val_iou:.4f})")
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
 
     return model
 
@@ -153,49 +290,47 @@ def evaluate_model(
     test_loader: torch.utils.data.DataLoader,
     device: str = "cpu",
 ) -> Dict[str, float]:
-    """Evaluate segmentation metrics on test set."""
+    """Evaluate segmentation metrics on test set with valid_mask filtering."""
     model = model.to(device)
     model.eval()
 
     all_probs = []
     all_targets = []
+    all_vmasks = []
 
     with torch.no_grad():
         for batch in test_loader:
-            sar = batch["sar"].to(device)
-            optical = batch["optical"].to(device)
-            geo = batch.get("geo")
-            if geo is not None:
-                geo = geo.to(device)
-            rainfall = batch.get("rainfall")
-            if rainfall is not None:
-                rainfall = rainfall.to(device)
-            modality_mask = batch.get("modality_mask")
-            if modality_mask is not None:
-                modality_mask = modality_mask.to(device)
             labels = batch["label"].to(device)
-
-            if isinstance(model, ResQNet):
-                out = model(sar=sar, optical=optical, geo=geo, rainfall=rainfall, modality_mask=modality_mask)
-            elif hasattr(model, "sar_only") and model.sar_only:
-                out = model(sar)
-            elif hasattr(model, "optical_only") and model.optical_only:
-                out = model(optical)
+            vmask = batch.get("valid_mask")
+            if vmask is not None:
+                vmask = vmask.to(device)
             else:
-                x = torch.cat([sar, optical], dim=1)
-                out = model(x)
+                vmask = torch.ones_like(labels)
 
-            probs = out["probs"] if isinstance(out, dict) and "probs" in out else torch.sigmoid(out["logits"] if isinstance(out, dict) else out)
+            logits = _run_forward(model, batch, device)
+            probs = torch.sigmoid(logits)
             probs, targets = align_tensors(probs, labels)
+
+            if vmask.dim() == 3 and targets.dim() == 4:
+                vmask = vmask.unsqueeze(1)
+            if vmask.shape[-2:] != targets.shape[-2:]:
+                vmask = F.interpolate(vmask, size=targets.shape[-2:], mode="nearest")
 
             all_probs.append(probs.cpu())
             all_targets.append(targets.cpu())
+            all_vmasks.append(vmask.cpu())
 
     probs_cat = torch.cat(all_probs, dim=0)
     targets_cat = torch.cat(all_targets, dim=0)
+    vmasks_cat = torch.cat(all_vmasks, dim=0)
 
-    metrics = FloodMetrics.compute(probs_cat, targets_cat)
-    ece = CalibrationMetrics.compute_ece(probs_cat.numpy().flatten(), targets_cat.numpy().flatten())
+    metrics = FloodMetrics.compute(probs_cat, targets_cat, valid_mask=vmasks_cat)
+
+    # Compute ECE on valid pixels
+    vmask_flat = vmasks_cat.numpy().flatten() > 0.5
+    probs_valid = probs_cat.numpy().flatten()[vmask_flat]
+    targets_valid = targets_cat.numpy().flatten()[vmask_flat]
+    ece = CalibrationMetrics.compute_ece(probs_valid, targets_valid)
     metrics["ece"] = float(ece)
     return metrics
 
@@ -305,9 +440,10 @@ def run_e1_main_comparison(config: Dict[str, Any], seed: int = 42) -> Dict[str, 
     )
     rf.fit(X_train, y_train)
 
-    # Evaluate RF on test set at pixel level
+    # Evaluate RF on test set at pixel level with valid_mask
     all_rf_probs = []
     all_rf_targets = []
+    all_rf_vmasks = []
     with torch.no_grad():
         for b in loaders["test"]:
             sar_b = b["sar"]
@@ -334,14 +470,22 @@ def run_e1_main_comparison(config: Dict[str, Any], seed: int = 42) -> Dict[str, 
 
             prob_tensor = torch.from_numpy(prob_flat.reshape(B, 1, H, W)).float()
             target_tensor = b["label"].unsqueeze(1).float()
+            vmask_tensor = b.get("valid_mask", torch.ones_like(b["label"])).unsqueeze(1).float()
+
             all_rf_probs.append(prob_tensor)
             all_rf_targets.append(target_tensor)
+            all_rf_vmasks.append(vmask_tensor)
 
     rf_probs_cat = torch.cat(all_rf_probs, dim=0)
     rf_targets_cat = torch.cat(all_rf_targets, dim=0)
+    rf_vmasks_cat = torch.cat(all_rf_vmasks, dim=0)
 
-    rf_metrics = FloodMetrics.compute(rf_probs_cat, rf_targets_cat)
-    rf_ece = CalibrationMetrics.compute_ece(rf_probs_cat.numpy().flatten(), rf_targets_cat.numpy().flatten())
+    rf_metrics = FloodMetrics.compute(rf_probs_cat, rf_targets_cat, valid_mask=rf_vmasks_cat)
+    rf_vmask_flat = rf_vmasks_cat.numpy().flatten() > 0.5
+    rf_ece = CalibrationMetrics.compute_ece(
+        rf_probs_cat.numpy().flatten()[rf_vmask_flat],
+        rf_targets_cat.numpy().flatten()[rf_vmask_flat]
+    )
     rf_metrics["ece"] = float(rf_ece)
     results["RandomForest"] = rf_metrics
 
@@ -993,8 +1137,56 @@ def aggregate_results(results_dir: Path, seeds: List[int]) -> Dict[str, Any]:
 
     with open(results_dir / "all_results_aggregated.json", "w") as f:
         json.dump(aggregated, f, indent=2)
-    logger.info(f"Aggregated results saved to {results_dir / 'all_results_aggregated.json'}")
-    return aggregated
+def run_sanity_check(config: Dict[str, Any], device: str = "cpu") -> None:
+    """Run 5-epoch sanity check on real data for UNet_SAR and ResQNet.
+
+    Prints validation IoU, NaN count and predicted flood fraction, and raises
+    a clear error if IoU < 0.05.
+    """
+    logger.info("=== Running 5-Epoch Sanity Check on Real Data ===")
+    dev = "cuda" if torch.cuda.is_available() and device != "cpu" else device
+
+    loaders = get_dataloaders(config, split_type="official")
+    logger.info(f"Loaded chips: train={len(loaders['train'].dataset)}, val={len(loaders['valid'].dataset)}")
+
+    # 1. UNet_SAR
+    logger.info("--- Sanity Check 1/2: UNet_SAR (5 epochs) ---")
+    unet_sar = SimpleUNet(in_channels=2, sar_only=True)
+    unet_sar = train_simple(
+        unet_sar, loaders["train"], loaders["valid"],
+        epochs=5, lr=1e-3, device=dev, smoke=False,
+        use_amp=True, early_stop_patience=5
+    )
+    sar_metrics = evaluate_model(unet_sar, loaders["valid"], device=dev)
+    logger.info(f"UNet_SAR 5-Epoch Validation IoU: {sar_metrics['iou']:.4f}, ECE: {sar_metrics.get('ece', 0.0):.4f}")
+
+    if sar_metrics["iou"] < 0.05:
+        raise RuntimeError(
+            f"SANITY CHECK FAILED: UNet_SAR validation IoU is {sar_metrics['iou']:.4f} (< 0.05)! "
+            "SAR preprocessing has collapsed to predicting 0 flood pixels."
+        )
+
+    # 2. ResQNet
+    logger.info("--- Sanity Check 2/2: ResQNet (5 epochs) ---")
+    resqnet = ResQNet(
+        sar_channels=2, optical_channels=13, geo_channels=6, rainfall_seq_len=30,
+        rainfall_d_model=32, rainfall_nhead=2, rainfall_layers=1, pretrained=False, dropout=0.1
+    )
+    resqnet = train_simple(
+        resqnet, loaders["train"], loaders["valid"],
+        epochs=5, lr=1e-3, device=dev, smoke=False,
+        use_amp=True, early_stop_patience=5
+    )
+    resqnet_metrics = evaluate_model(resqnet, loaders["valid"], device=dev)
+    logger.info(f"ResQNet 5-Epoch Validation IoU: {resqnet_metrics['iou']:.4f}, ECE: {resqnet_metrics.get('ece', 0.0):.4f}")
+
+    if resqnet_metrics["iou"] < 0.05:
+        raise RuntimeError(
+            f"SANITY CHECK FAILED: ResQNet validation IoU is {resqnet_metrics['iou']:.4f} (< 0.05)! "
+            "ResQNet multimodal model has collapsed."
+        )
+
+    logger.info("=== SANITY CHECK PASSED: Both UNet_SAR and ResQNet achieved valid IoU >= 0.05! ===")
 
 
 def main():
@@ -1002,6 +1194,7 @@ def main():
     parser.add_argument("--experiment", type=str, default="all", choices=["all", "e1", "e2", "e3", "e4", "e5", "e6", "e7", "smoke"])
     parser.add_argument("--config", type=str, default="configs/default.yaml")
     parser.add_argument("--smoke", action="store_true", help="Run rapid CPU smoke tests in under 5 minutes")
+    parser.add_argument("--sanity_check", action="store_true", help="Run 5-epoch sanity check on real data for UNet_SAR and ResQNet")
     parser.add_argument("--seeds", nargs="+", type=int, default=[42, 123, 456], help="Seeds for multi-seed evaluation")
     parser.add_argument("--device", type=str, default="cpu")
 
@@ -1013,6 +1206,10 @@ def main():
     config_path = ROOT_DIR / args.config
     cfg = load_config(str(config_path), smoke=args.smoke)
     cfg["project"]["device"] = args.device
+
+    if args.sanity_check:
+        run_sanity_check(cfg, device=args.device)
+        return
 
     if args.smoke or args.experiment == "smoke":
         cfg["project"]["smoke"] = True

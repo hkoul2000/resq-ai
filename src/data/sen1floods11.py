@@ -252,8 +252,8 @@ class Sen1Floods11Dataset(Dataset):
     def __len__(self) -> int:
         return len(self.chips)
 
-    def _load_tif(self, path: Path) -> np.ndarray | None:
-        """Load a GeoTIFF file, returning None if unavailable."""
+    def _load_tif(self, path: Path, is_sar: bool = False) -> np.ndarray | None:
+        """Load a GeoTIFF file, masking nodata and unphysical values."""
         if path is None or not path.exists():
             return None
         try:
@@ -261,13 +261,38 @@ class Sen1Floods11Dataset(Dataset):
 
             with rasterio.open(path) as src:
                 data = src.read().astype(np.float32)
+                nodata_val = src.nodata
+
+            # Replace tagged nodata sentinel with NaN
+            if nodata_val is not None:
+                data[data == nodata_val] = np.nan
+
+            # For SAR: mask unphysical values and untagged -9999 nodata sentinels.
+            # Sentinel-1 GRD in dB typically spans [-35, +5] dB; clamp to [-50, 25] dB.
+            if is_sar:
+                data[data <= -9000.0] = np.nan
+                data[(data < -50.0) | (data > 25.0)] = np.nan
+
             return data
         except Exception as e:
             logger.debug(f"Failed to load {path}: {e}")
             return None
 
+    def _impute_sar(self, sar_data: np.ndarray) -> np.ndarray:
+        """Impute NaN/Inf pixels in SAR with the channel's valid mean."""
+        sar_clean = sar_data.copy()
+        for c in range(sar_clean.shape[0]):
+            band = sar_clean[c]
+            valid_mask = np.isfinite(band)
+            if np.any(valid_mask):
+                fill_val = float(np.mean(band[valid_mask]))
+            else:
+                fill_val = float(self.s1_mean[c])
+            sar_clean[c] = np.where(valid_mask, band, fill_val)
+        return sar_clean
+
     def _random_crop(self, *arrays: np.ndarray | None) -> list[np.ndarray | None]:
-        """Apply consistent random crop to all arrays."""
+        """Apply consistent random crop to all arrays during training only."""
         # Find first non-None array to get dimensions
         ref = None
         for arr in arrays:
@@ -322,16 +347,20 @@ class Sen1Floods11Dataset(Dataset):
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         chip = self.chips[idx]
 
-        # Load data
-        s1_data = self._load_tif(chip["s1"])  # (2, H, W) - VV, VH
-        s2_data = self._load_tif(chip["s2"])  # (13, H, W) - 13 bands
-        label_data = self._load_tif(chip.get("label"))  # (1, H, W)
+        # Load data with SAR-specific nodata masking
+        s1_data = self._load_tif(chip["s1"], is_sar=True)   # (2, H, W) - VV, VH
+        s2_data = self._load_tif(chip["s2"], is_sar=False)  # (13, H, W) - 13 bands
+        label_data = self._load_tif(chip.get("label"), is_sar=False)  # (1, H, W)
 
-        # Random crop
-        s1_data, s2_data, label_data = self._random_crop(s1_data, s2_data, label_data)
+        # Apply random crop ONLY during training; evaluation uses full chips deterministically
+        if self.split == "train":
+            s1_data, s2_data, label_data = self._random_crop(s1_data, s2_data, label_data)
+            # Augmentation (train only)
+            s1_data, s2_data, label_data = self._augment(s1_data, s2_data, label_data)
 
-        # Augmentation
-        s1_data, s2_data, label_data = self._augment(s1_data, s2_data, label_data)
+        # Determine spatial dimensions
+        ref_arr = s1_data if s1_data is not None else (s2_data if s2_data is not None else label_data)
+        h, w = ref_arr.shape[-2:] if ref_arr is not None else (self.crop_size, self.crop_size)
 
         # Build output dict
         sample: dict[str, Any] = {
@@ -345,10 +374,15 @@ class Sen1Floods11Dataset(Dataset):
         # SAR (Sentinel-1)
         if "sar" in self.modalities:
             if s1_data is not None:
+                # 1. Impute nodata/NaN with channel valid mean prior to normalization
+                s1_data = self._impute_sar(s1_data)
+                # 2. Per-channel normalization
                 if self.normalize:
                     s1_data = (s1_data - self.s1_mean[:, None, None]) / (
                         self.s1_std[:, None, None] + 1e-8
                     )
+                # 3. Post-normalization nan_to_num safety guard
+                s1_data = np.nan_to_num(s1_data, nan=0.0, posinf=5.0, neginf=-5.0)
                 # Modality dropout
                 if self.modality_dropout > 0 and np.random.random() < self.modality_dropout:
                     s1_data = np.zeros_like(s1_data)
@@ -357,16 +391,19 @@ class Sen1Floods11Dataset(Dataset):
                     modality_mask["sar"] = True
                 sample["sar"] = torch.from_numpy(s1_data.copy())
             else:
-                sample["sar"] = torch.zeros(2, self.crop_size, self.crop_size)
+                sample["sar"] = torch.zeros(2, h, w)
                 modality_mask["sar"] = False
 
         # Optical (Sentinel-2)
         if "optical" in self.modalities:
             if s2_data is not None:
+                # Impute any optical NaN with median / zero
+                s2_data = np.nan_to_num(s2_data, nan=0.0)
                 if self.normalize:
                     s2_data = (s2_data - self.s2_mean[:, None, None]) / (
                         self.s2_std[:, None, None] + 1e-8
                     )
+                s2_data = np.nan_to_num(s2_data, nan=0.0, posinf=10.0, neginf=-10.0)
                 if self.modality_dropout > 0 and np.random.random() < self.modality_dropout:
                     s2_data = np.zeros_like(s2_data)
                     modality_mask["optical"] = False
@@ -374,19 +411,18 @@ class Sen1Floods11Dataset(Dataset):
                     modality_mask["optical"] = True
                 sample["optical"] = torch.from_numpy(s2_data.copy())
             else:
-                sample["optical"] = torch.zeros(13, self.crop_size, self.crop_size)
+                sample["optical"] = torch.zeros(13, h, w)
                 modality_mask["optical"] = False
 
-        # Label
+        # Label: Sen1Floods11 uses 1=flood, 0=dry, -1=nodata
         if label_data is not None:
-            label = (label_data > 0).astype(np.float32)
-            # Handle nodata: Sen1Floods11 uses -1 for nodata
-            valid_mask = (label_data >= 0).astype(np.float32)
+            valid_mask = ((label_data >= 0) & np.isfinite(label_data)).astype(np.float32)
+            label = (label_data > 0).astype(np.float32) * valid_mask
             sample["label"] = torch.from_numpy(label.copy()).squeeze(0)
             sample["valid_mask"] = torch.from_numpy(valid_mask.copy()).squeeze(0)
         else:
-            sample["label"] = torch.zeros(self.crop_size, self.crop_size)
-            sample["valid_mask"] = torch.zeros(self.crop_size, self.crop_size)
+            sample["label"] = torch.zeros(h, w)
+            sample["valid_mask"] = torch.zeros(h, w)
 
         # Modality availability tensor
         mod_names = ["sar", "optical", "dem", "landcover", "rainfall"]
@@ -460,7 +496,9 @@ class MultiModalFloodDataset(Dataset):
         sample = self.base[idx]
         region = sample["region"]
         chip_id = sample["chip_id"]
-        crop_size = self.base.crop_size
+        # Dynamic spatial dimensions (matches 256 on train crop, 512 on val/test)
+        ref_t = sample.get("sar") if "sar" in sample else sample.get("optical")
+        h, w = ref_t.shape[-2:] if ref_t is not None else (self.base.crop_size, self.base.crop_size)
 
         # Add terrain features
         terrain = self._load_terrain(region, chip_id)
@@ -468,7 +506,7 @@ class MultiModalFloodDataset(Dataset):
             sample["geo"] = terrain
             sample["modality_mask"][2] = 1.0  # dem available
         else:
-            sample["geo"] = torch.zeros(self.geo_channels, crop_size, crop_size)
+            sample["geo"] = torch.zeros(self.geo_channels, h, w)
 
         # Add land cover
         lc = self._load_landcover(region, chip_id)

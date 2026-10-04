@@ -47,26 +47,28 @@ The notebook now includes **Google Drive backup and resume logic**:
 | Cell # | Section / Command | Purpose | Expected Runtime (T4 GPU) | Key Output Files Generated |
 | :--- | :--- | :--- | :--- | :--- |
 | **Cell 1** | Markdown Header | Overview and setup notes | Instant | None |
-| **Cell 2** | `drive.mount(...)` | **[NEW]** Mount Google Drive for checkpoint backup | ~30 seconds (auth) | `MyDrive/resq_ai_checkpoints/` created |
-| **Cell 3** | Resume detection + `is_done` / `mark_done` / `sync_to_drive` | **[NEW]** Check which experiments are already done; restore prior results from Drive | Instant | Status printout |
+| **Cell 2** | `drive.mount(...)` | Mount Google Drive for checkpoint backup | ~30 seconds (auth) | `MyDrive/resq_ai_checkpoints/` created |
+| **Cell 3** | Resume detection + `is_done` / `mark_done` / `sync_to_drive` | Check which experiments are already done; restore prior results from Drive | Instant | Status printout |
 | **Cell 4** | `!nvidia-smi` | Verify NVIDIA driver & GPU availability (16 GB VRAM) | <5 seconds | Console GPU status |
 | **Cell 5** | `!git clone ... && pip install -q -r requirements.txt` | Clone repository (**replace placeholder URL first!**) and install pinned dependencies | ~2–3 minutes | dependencies installed |
-| **Cell 6** | `!python -m pytest tests/test_smoke.py -v -m smoke --tb=short` | Pre-flight smoke validation on PyTorch, UQ, and solvers | ~30 seconds | 38/38 passing unit tests |
+| **Cell 6** | `!python -m pytest tests/ -q` | Pre-flight smoke validation (all unit tests, UQ, solvers, SAR sanitization) | ~45 seconds | 43/43 passing unit tests |
 | **Cell 7** | Markdown: Download Real Sen1Floods11 Dataset | Section Header | Instant | None |
 | **Cell 8** | `!gsutil -m cp -r gs://sen1floods11/v1.1/...` | Download official hand-labeled Sen1Floods11 chips (446 chips, ~3 GB) and split CSVs | ~1–2 minutes | `data/sen1floods11/v1.1/...` |
-| **Cell 9** | Markdown: Run Experiments | Header | Instant | None |
-| **Cell 10** | E1 with skip-if-done guard | **E1: Main Model Comparison** (ResQNet, UNet-SAR, UNet-Optical, EarlyFusion, pixel-level Random Forest across 5 seeds); saves to Drive on completion | ~45–60 minutes | `results/e1_*.json`; `e1.done` in Drive |
-| **Cell 11** | E2 with skip-if-done guard | **E2: Ablation Studies** (Modality ablation, FiLM/Cross-Attention ablation, Modality Dropout) | ~35–45 minutes | `results/e2_*.json`; `e2.done` in Drive |
-| **Cell 12** | E3 with skip-if-done guard | **E3: Calibration & Uncertainty** (Deterministic, MC Dropout T=20, TTA, Deep Ensemble M=5) | ~30–40 minutes | `results/e3_*.json`; `e3.done` in Drive |
-| **Cell 13** | E4 with skip-if-done guard | **E4: Split Conformal Prediction** (Marginal coverage and set sizes across α ∈ {0.01, 0.05, 0.1, 0.2}) | ~15–20 minutes | `results/e4_*.json`; `e4.done` in Drive |
-| **Cell 14** | E5 with skip-if-done guard | **E5: Sensor Robustness** (SAR noise levels, optical cloud obscuration, missing combinations) | ~25–35 minutes | `results/e5_*.json`; `e5.done` in Drive |
-| **Cell 15** | E6 with skip-if-done guard | **E6: Resource Allocation** (HiGHS LP solvers: Deterministic, SAA, CVaR, Greedy, Proportional, Oracle, sensitivity analysis) | ~5–10 minutes | `results/e6_*.json`; `e6.done` in Drive |
-| **Cell 16** | E7 with skip-if-done guard | **E7: Computational Efficiency** (GPU forward latency, parameter counts, throughput FPS) | ~5 minutes | `results/e7_*.json`; `e7.done` in Drive |
-| **Cell 17** | Markdown: Generate Figures and Tables | Header | Instant | None |
-| **Cell 18** | `generate_figures.py` + `generate_tables.py` + Drive sync | Compile all LaTeX tables and vector figures; sync to Drive | ~1–2 minutes | `figures/*.png`, `figures/*.pdf`, `paper/tables/*.tex`; Drive backup |
-| **Cell 19** | `display(Image(...))` | Render and inspect generated figures in Colab output | ~10 seconds | Visual verification |
-| **Cell 20** | Markdown: Download Results | Header | Instant | None |
-| **Cell 21** | `!zip ...` + Drive copy + `files.download(...)` | Archive all results into zip; save to Drive; trigger browser download | ~30 seconds | `resq_ai_results.zip` (local + Drive) |
+| **Cell 9** | Markdown: Pre-Flight Sanity Check | Section Header | Instant | None |
+| **Cell 10** | `!python experiments/run_experiments.py --sanity_check ...` | **[CRITICAL SANITY CHECK]** 5-epoch test of UNet_SAR and ResQNet on real data; halts with error if IoU < 0.05 | ~2–3 minutes | Console validation IoU & NaN verification |
+| **Cell 11** | Markdown: Run Experiments | Header | Instant | None |
+| **Cell 12** | E1 with skip-if-done guard | **E1: Main Model Comparison** (ResQNet, UNet-SAR, UNet-Optical, EarlyFusion, Random Forest with AMP & early stopping); saves to Drive after each model | ~20–25 minutes / seed (~65 min for 3 seeds) | `results/e1_*.json`; `e1.done` in Drive |
+| **Cell 13** | E2 with skip-if-done guard | **E2: Ablation Studies** (Modality ablation, FiLM/Cross-Attention, Modality Dropout) | ~30–35 minutes | `results/e2_*.json`; `e2.done` in Drive |
+| **Cell 14** | E3 with skip-if-done guard | **E3: Calibration & Uncertainty** (Deterministic, MC Dropout T=20, TTA, Deep Ensemble M=5) | ~20–30 minutes | `results/e3_*.json`; `e3.done` in Drive |
+| **Cell 15** | E4 with skip-if-done guard | **E4: Conformal Prediction** (Split conformal, Coverage vs Target across events) | ~15–20 minutes | `results/e4_*.json`; `e4.done` in Drive |
+| **Cell 16** | E5 with skip-if-done guard | **E5: Robustness Tests** (Missing modalities, noise injection, cross-event shift) | ~20–25 minutes | `results/e5_*.json`; `e5.done` in Drive |
+| **Cell 17** | E6 with skip-if-done guard | **E6: Resource Allocation Optimization** (Deterministic, SAA, CVaR, Chance-Constrained via HiGHS) | ~8–12 minutes | `results/e6_*.json`; `e6.done` in Drive |
+| **Cell 18** | E7 with skip-if-done guard | **E7: Efficiency Benchmarking** (Parameter counts, MACs, inference latency) | ~3–5 minutes | `results/e7_*.json`; `e7.done` in Drive |
+| **Cell 19** | Markdown: Generate Figures and Tables | Header | Instant | None |
+| **Cell 20** | `generate_figures.py` + `generate_tables.py` + Drive sync | Compile all LaTeX tables and vector figures; sync to Drive | ~1–2 minutes | `figures/*.png`, `figures/*.pdf`, `paper/tables/*.tex`; Drive backup |
+| **Cell 21** | `display(Image(...))` | Render and inspect generated figures in Colab output | ~10 seconds | Visual verification |
+| **Cell 22** | Markdown: Download Results | Header | Instant | None |
+| **Cell 23** | `!zip ...` + Drive copy + `files.download(...)` | Archive all results into zip; save to Drive; trigger browser download | ~30 seconds | `resq_ai_results.zip` (local + Drive) |
 
 **Total Estimated GPU Wallclock Time**: ~2.5–3.5 hours on NVIDIA T4.
 

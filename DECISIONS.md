@@ -70,3 +70,15 @@
 **Reasoning**: Adheres strictly to the rule that synthetic/smoke results must be explicitly labeled and never presented as final, and guarantees that the GPU Colab notebook executes out-of-the-box with real satellite data.
 **Date**: 2026-10-03
 
+## D015: SAR Nodata Sanitization, Valid Mask Propagation, and Deterministic Full-Chip Evaluation
+**Decision**: 
+1. In `src/data/sen1floods11.py`, mask nodata sentinels (`-9999.0`, `NaN`, and physically implausible values outside `[-50.0, 25.0]` dB) in Sentinel-1 SAR imagery and impute with the channel's valid mean prior to z-score normalization, followed by `np.nan_to_num`.
+2. Add a runtime assertion checking every batch in epoch 1 for NaN/Inf in SAR tensors to fail early if corrupt data is encountered.
+3. Pass `valid_mask` into `BCEDiceLoss` and `FloodMetrics` (and ECE calculation), strictly masking out label pixels with value `-1` from loss gradients and evaluation metrics.
+4. Restrict `_random_crop` strictly to `train` split; validation and test splits evaluate deterministically on full 512x512 chips.
+5. Make positive class weight dynamic (`pos_weight: auto`), estimating `pos_weight = neg_pixels / pos_pixels` directly from training split pixel counts.
+6. Enable automatic mixed precision (`torch.cuda.amp`) and early stopping on validation IoU to reduce wallclock runtime on Colab T4 GPU to ~2.5–3.5 hours.
+7. Integrate a 5-epoch pre-flight sanity check (`--sanity_check`) into the notebook to verify validation IoU $\ge 0.05$ before launching multi-seed sweeps.
+**Reasoning**: Resolves critical Issue `I-009` where `-9999` nodata in Sen1Floods11 SAR chips corrupted batch normalization statistics, leading to total modality collapse (IoU = 0.0000) for all SAR-dependent architectures (`ResQNet`, `UNet_SAR`, `EarlyFusion`). Eliminates random-crop variance during evaluation, and safeguards against runaway training times.
+**Date**: 2026-10-04
+
